@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mapa Voluntarios</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { width: 100vw; height: 100vh; overflow: hidden; }
+    #mapa { width: 100%; height: 100%; }
+    #cargando {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      font-family: Arial, sans-serif;
+      font-size: 16px;
+      z-index: 9999;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    }
+  </style>
+</head>
+<body>
+  <div id="mapa"></div>
+  <div id="cargando">⏳ Cargando mapa...</div>
+
+  <script>
+    // Configuración Firebase
+    const firebaseConfig = {
+      apiKey: "AIzaSyDq2OO9jwRPFEv7yz0r1INAZmHWixxMOns",
+      authDomain: "ong-mapa-v01.firebaseapp.com",
+      projectId: "ong-mapa-v01",
+      storageBucket: "ong-mapa-v01.firebasestorage.app",
+      messagingSenderId: "330563286550",
+      appId: "1:330563286550:web:9030de5b44a91ca6792737"
+    };
+
+    // Inicializar Firebase
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    // Inicializar mapa centrado en Alcázar de San Juan
+    const mapa = L.map('mapa').setView([39.3900748, -3.2100984], 15);
+
+    // Capa de calles OpenStreetMap (gratuita, sin API key)
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors',
+      maxZoom: 19
+    }).addTo(mapa);
+
+    // Guardar referencias a las líneas dibujadas
+    const lineas = {};
+
+    // Escuchar cambios en Firestore en tiempo real
+    db.collection('tramos_calles').onSnapshot((snapshot) => {
+      // Ocultar mensaje de carga
+      document.getElementById('cargando').style.display = 'none';
+
+      snapshot.docChanges().forEach((change) => {
+        const doc = change.doc;
+        const data = doc.data();
+        const id = doc.id;
+
+        // Si el documento fue eliminado, quitamos la línea
+        if (change.type === 'removed') {
+          if (lineas[id]) {
+            mapa.removeLayer(lineas[id]);
+            delete lineas[id];
+          }
+          return;
+        }
+
+        const latInicio = data.lat_inicio;
+        const lngInicio = data.lng_inicio;
+        const latFin = data.lat_fin;
+        const lngFin = data.lng_fin;
+        const estado = data.estado || 'rojo';
+
+        // Color según estado
+        const color = estado === 'verde' ? '#00BB00' : '#FF2222';
+
+        // Si ya existe la línea, la eliminamos para redibujarla
+        if (lineas[id]) {
+          mapa.removeLayer(lineas[id]);
+        }
+
+        // Dibujar línea nueva
+        lineas[id] = L.polyline(
+          [[latInicio, lngInicio], [latFin, lngFin]],
+          {
+            color: color,
+            weight: 5,
+            opacity: 0.85
+          }
+        ).addTo(mapa);
+      });
+    }, (error) => {
+      document.getElementById('cargando').innerHTML = 
+        '❌ Error al cargar datos. Comprueba tu conexión.';
+      console.error('Error Firestore:', error);
+    });
+  </script>
+</body>
+</html>

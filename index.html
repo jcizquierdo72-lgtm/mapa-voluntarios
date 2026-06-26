@@ -12,8 +12,6 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: Arial, sans-serif; width: 100vw; height: 100vh; overflow: hidden; background: #1a1a2e; }
-
-    /* PANTALLA DE LOGIN */
     #loginScreen {
       display: flex;
       flex-direction: column;
@@ -52,9 +50,7 @@
       font-size: 16px;
       outline: none;
     }
-    #loginBox input:focus {
-      border-color: #4a90e2;
-    }
+    #loginBox input:focus { border-color: #4a90e2; }
     #loginBtn {
       width: 100%;
       padding: 14px;
@@ -91,12 +87,7 @@
       margin-top: 8px;
       display: none;
     }
-
-    /* PANTALLA DEL MAPA */
     #mapScreen { display: none; width: 100vw; height: 100vh; }
-    #mapa { width: 100%; height: 100%; }
-
-    /* BARRA SUPERIOR DEL MAPA */
     #topBar {
       position: absolute;
       top: 0;
@@ -122,8 +113,6 @@
       cursor: pointer;
       font-size: 13px;
     }
-
-    /* MENSAJE DE CARGA */
     #cargando {
       position: absolute;
       bottom: 20px;
@@ -136,8 +125,6 @@
       z-index: 1000;
       box-shadow: 0 2px 10px rgba(0,0,0,0.2);
     }
-
-    /* CONTADOR DE TRAMOS */
     #contador {
       position: absolute;
       bottom: 60px;
@@ -156,25 +143,23 @@
 </head>
 <body>
 
-  <!-- PANTALLA LOGIN -->
   <div id="loginScreen">
     <div id="loginBox">
       <h2>🗺️ Mapa Voluntarios</h2>
       <p>Inicia sesión para continuar</p>
       <input type="email" id="emailInput" placeholder="Correo electrónico"/>
       <input type="password" id="passwordInput" placeholder="Contraseña"/>
-      <button id="loginBtn" onclick="hacerLogin()">Iniciar sesión</button>
-      <button id="forgotBtn" onclick="recuperarPassword()">¿Olvidaste tu contraseña?</button>
+      <button id="loginBtn">Iniciar sesión</button>
+      <button id="forgotBtn">¿Olvidaste tu contraseña?</button>
       <div id="loginError"></div>
       <div id="loginMsg"></div>
     </div>
   </div>
 
-  <!-- PANTALLA MAPA -->
   <div id="mapScreen">
     <div id="topBar">
       <span>🗺️ Mapa Voluntarios</span>
-      <button id="logoutBtn" onclick="cerrarSesion()">Cerrar sesión</button>
+      <button id="logoutBtn">Cerrar sesión</button>
     </div>
     <div id="mapa" style="margin-top:50px; height: calc(100vh - 50px);"></div>
     <div id="cargando">⏳ Cargando tramos...</div>
@@ -182,9 +167,6 @@
   </div>
 
   <script>
-    // ============================================
-    // CONFIGURACIÓN FIREBASE
-    // ============================================
     const firebaseConfig = {
       apiKey: "AIzaSyDq2OO9jwRPFEv7yz0r1INAZmHWixxMOns",
       authDomain: "ong-mapa-v01.firebaseapp.com",
@@ -198,9 +180,6 @@
     const auth = firebase.auth();
     const db = firebase.firestore();
 
-    // ============================================
-    // VARIABLES GLOBALES
-    // ============================================
     let mapa = null;
     const lineas = {};
     let userId = null;
@@ -208,9 +187,6 @@
     let totalTramos = 0;
     let tramosVerdes = 0;
 
-    // ============================================
-    // LOGIN
-    // ============================================
     function hacerLogin() {
       const email = document.getElementById('emailInput').value.trim();
       const password = document.getElementById('passwordInput').value;
@@ -222,7 +198,7 @@
       btnLogin.disabled = true;
 
       auth.signInWithEmailAndPassword(email, password)
-        .catch((error) => {
+        .catch(() => {
           btnLogin.textContent = 'Iniciar sesión';
           btnLogin.disabled = false;
           errorDiv.textContent = 'Correo o contraseña incorrectos';
@@ -257,14 +233,120 @@
       auth.signOut();
     }
 
-    // Permitir login con Enter
-    document.getElementById('passwordInput').addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') hacerLogin();
-    });
+    function calcularDistancia(lat1, lng1, lat2, lng2) {
+      const R = 6371000;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLng/2) * Math.sin(dLng/2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
 
-    // ============================================
-    // CONTROL DE SESIÓN
-    // ============================================
+    function comprobarProximidad(lat, lng) {
+      db.collection('tramos_calles')
+        .where('estado', '==', 'rojo')
+        .get()
+        .then((snapshot) => {
+          snapshot.forEach((doc) => {
+            const data = doc.data();
+            const latCentro = (data.lat_inicio + data.lat_fin) / 2;
+            const lngCentro = (data.lng_inicio + data.lng_fin) / 2;
+            const distancia = calcularDistancia(lat, lng, latCentro, lngCentro);
+
+            if (distancia < 10) {
+              const voluntariosCerca = data.voluntarios_cerca || [];
+              if (!voluntariosCerca.includes(userId)) {
+                const nuevaLista = [...voluntariosCerca, userId];
+                if (nuevaLista.length >= 2) {
+                  doc.ref.update({
+                    estado: 'verde',
+                    voluntarios_cerca: nuevaLista,
+                    visitado_por: firebase.firestore.FieldValue.arrayUnion(userId)
+                  });
+                } else {
+                  doc.ref.update({ voluntarios_cerca: nuevaLista });
+                }
+              }
+            } else {
+              const voluntariosCerca = data.voluntarios_cerca || [];
+              if (voluntariosCerca.includes(userId)) {
+                doc.ref.update({
+                  voluntarios_cerca: firebase.firestore.FieldValue.arrayRemove(userId)
+                });
+              }
+            }
+          });
+        });
+    }
+
+    function iniciarGPS() {
+      if (!navigator.geolocation) return;
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          comprobarProximidad(pos.coords.latitude, pos.coords.longitude);
+        },
+        (err) => console.log('GPS error:', err),
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+      );
+    }
+
+    function cargarTramos() {
+      db.collection('tramos_calles').onSnapshot((snapshot) => {
+        document.getElementById('cargando').style.display = 'none';
+        totalTramos = snapshot.size;
+        tramosVerdes = 0;
+
+        snapshot.docChanges().forEach((change) => {
+          const doc = change.doc;
+          const data = doc.data();
+          const id = doc.id;
+          const estado = data.estado || 'rojo';
+
+          if (estado === 'verde') tramosVerdes++;
+
+          if (change.type === 'removed') {
+            if (lineas[id]) { mapa.removeLayer(lineas[id]); delete lineas[id]; }
+            return;
+          }
+
+          const color = estado === 'verde' ? '#00BB00' : '#FF2222';
+          if (lineas[id]) mapa.removeLayer(lineas[id]);
+
+          lineas[id] = L.polyline(
+            [[data.lat_inicio, data.lng_inicio], [data.lat_fin, data.lng_fin]],
+            { color: color, weight: 5, opacity: 0.85 }
+          ).addTo(mapa);
+        });
+
+        const contador = document.getElementById('contador');
+        contador.style.display = 'block';
+        const porcentaje = totalTramos > 0 ? Math.round((tramosVerdes / totalTramos) * 100) : 0;
+        contador.textContent = `✅ ${tramosVerdes}/${totalTramos} tramos recorridos (${porcentaje}%)`;
+      });
+    }
+
+    function iniciarMapa() {
+      if (mapa) return;
+      mapa = L.map('mapa');
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap',
+        maxZoom: 19
+      }).addTo(mapa);
+
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => mapa.setView([pos.coords.latitude, pos.coords.longitude], 17),
+          () => mapa.setView([39.3900748, -3.2100984], 15)
+        );
+      } else {
+        mapa.setView([39.3900748, -3.2100984], 15);
+      }
+
+      cargarTramos();
+      iniciarGPS();
+    }
+
     auth.onAuthStateChanged((user) => {
       if (user) {
         userId = user.uid;
@@ -282,6 +364,14 @@
       }
     });
 
-    // ============================================
-    // INICIAR MAPA
-    //
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('loginBtn').addEventListener('click', hacerLogin);
+      document.getElementById('forgotBtn').addEventListener('click', recuperarPassword);
+      document.getElementById('logoutBtn').addEventListener('click', cerrarSesion);
+      document.getElementById('passwordInput').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') hacerLogin();
+      });
+    });
+  </script>
+</body>
+</html>

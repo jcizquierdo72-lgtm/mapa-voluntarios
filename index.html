@@ -3,36 +3,188 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mapa Voluntarios</title>
+  <title>Mapa Voluntarios ONG</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { width: 100vw; height: 100vh; overflow: hidden; }
+    body { font-family: Arial, sans-serif; width: 100vw; height: 100vh; overflow: hidden; background: #1a1a2e; }
+
+    /* PANTALLA DE LOGIN */
+    #loginScreen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 100vw;
+      height: 100vh;
+      background: linear-gradient(135deg, #1a1a2e, #16213e);
+    }
+    #loginBox {
+      background: white;
+      padding: 40px 30px;
+      border-radius: 16px;
+      width: 90%;
+      max-width: 360px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+    }
+    #loginBox h2 {
+      text-align: center;
+      margin-bottom: 8px;
+      color: #1a1a2e;
+      font-size: 24px;
+    }
+    #loginBox p {
+      text-align: center;
+      color: #666;
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+    #loginBox input {
+      width: 100%;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 16px;
+      outline: none;
+    }
+    #loginBox input:focus {
+      border-color: #4a90e2;
+    }
+    #loginBtn {
+      width: 100%;
+      padding: 14px;
+      background: #4a90e2;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    #loginBtn:active { background: #357abd; }
+    #forgotBtn {
+      width: 100%;
+      margin-top: 12px;
+      padding: 10px;
+      background: none;
+      border: none;
+      color: #4a90e2;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    #loginError {
+      color: red;
+      font-size: 13px;
+      text-align: center;
+      margin-top: 8px;
+      display: none;
+    }
+    #loginMsg {
+      color: green;
+      font-size: 13px;
+      text-align: center;
+      margin-top: 8px;
+      display: none;
+    }
+
+    /* PANTALLA DEL MAPA */
+    #mapScreen { display: none; width: 100vw; height: 100vh; }
     #mapa { width: 100%; height: 100%; }
+
+    /* BARRA SUPERIOR DEL MAPA */
+    #topBar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 50px;
+      background: #1a1a2e;
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      z-index: 1000;
+      font-size: 14px;
+    }
+    #topBar span { font-weight: bold; }
+    #logoutBtn {
+      background: rgba(255,255,255,0.2);
+      border: none;
+      color: white;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    /* MENSAJE DE CARGA */
     #cargando {
       position: absolute;
-      top: 50%;
+      bottom: 20px;
       left: 50%;
-      transform: translate(-50%, -50%);
+      transform: translateX(-50%);
       background: white;
-      padding: 20px;
-      border-radius: 10px;
-      font-family: Arial, sans-serif;
-      font-size: 16px;
-      z-index: 9999;
+      padding: 10px 20px;
+      border-radius: 20px;
+      font-size: 13px;
+      z-index: 1000;
       box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    }
+
+    /* CONTADOR DE TRAMOS */
+    #contador {
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.7);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 12px;
+      z-index: 1000;
+      display: none;
+      white-space: nowrap;
     }
   </style>
 </head>
 <body>
-  <div id="mapa"></div>
-  <div id="cargando">⏳ Cargando mapa...</div>
+
+  <!-- PANTALLA LOGIN -->
+  <div id="loginScreen">
+    <div id="loginBox">
+      <h2>🗺️ Mapa Voluntarios</h2>
+      <p>Inicia sesión para continuar</p>
+      <input type="email" id="emailInput" placeholder="Correo electrónico"/>
+      <input type="password" id="passwordInput" placeholder="Contraseña"/>
+      <button id="loginBtn" onclick="hacerLogin()">Iniciar sesión</button>
+      <button id="forgotBtn" onclick="recuperarPassword()">¿Olvidaste tu contraseña?</button>
+      <div id="loginError"></div>
+      <div id="loginMsg"></div>
+    </div>
+  </div>
+
+  <!-- PANTALLA MAPA -->
+  <div id="mapScreen">
+    <div id="topBar">
+      <span>🗺️ Mapa Voluntarios</span>
+      <button id="logoutBtn" onclick="cerrarSesion()">Cerrar sesión</button>
+    </div>
+    <div id="mapa" style="margin-top:50px; height: calc(100vh - 50px);"></div>
+    <div id="cargando">⏳ Cargando tramos...</div>
+    <div id="contador"></div>
+  </div>
 
   <script>
-    // Configuración Firebase
+    // ============================================
+    // CONFIGURACIÓN FIREBASE
+    // ============================================
     const firebaseConfig = {
       apiKey: "AIzaSyDq2OO9jwRPFEv7yz0r1INAZmHWixxMOns",
       authDomain: "ong-mapa-v01.firebaseapp.com",
@@ -42,70 +194,94 @@
       appId: "1:330563286550:web:9030de5b44a91ca6792737"
     };
 
-    // Inicializar Firebase
     firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
     const db = firebase.firestore();
 
-    // Inicializar mapa centrado en Alcázar de San Juan
-    const mapa = L.map('mapa').setView([39.3900748, -3.2100984], 15);
-
-    // Capa de calles OpenStreetMap (gratuita, sin API key)
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap contributors',
-      maxZoom: 19
-    }).addTo(mapa);
-
-    // Guardar referencias a las líneas dibujadas
+    // ============================================
+    // VARIABLES GLOBALES
+    // ============================================
+    let mapa = null;
     const lineas = {};
+    let userId = null;
+    let watchId = null;
+    let totalTramos = 0;
+    let tramosVerdes = 0;
 
-    // Escuchar cambios en Firestore en tiempo real
-    db.collection('tramos_calles').onSnapshot((snapshot) => {
-      // Ocultar mensaje de carga
-      document.getElementById('cargando').style.display = 'none';
+    // ============================================
+    // LOGIN
+    // ============================================
+    function hacerLogin() {
+      const email = document.getElementById('emailInput').value.trim();
+      const password = document.getElementById('passwordInput').value;
+      const btnLogin = document.getElementById('loginBtn');
+      const errorDiv = document.getElementById('loginError');
 
-      snapshot.docChanges().forEach((change) => {
-        const doc = change.doc;
-        const data = doc.data();
-        const id = doc.id;
+      errorDiv.style.display = 'none';
+      btnLogin.textContent = 'Entrando...';
+      btnLogin.disabled = true;
 
-        // Si el documento fue eliminado, quitamos la línea
-        if (change.type === 'removed') {
-          if (lineas[id]) {
-            mapa.removeLayer(lineas[id]);
-            delete lineas[id];
-          }
-          return;
-        }
+      auth.signInWithEmailAndPassword(email, password)
+        .catch((error) => {
+          btnLogin.textContent = 'Iniciar sesión';
+          btnLogin.disabled = false;
+          errorDiv.textContent = 'Correo o contraseña incorrectos';
+          errorDiv.style.display = 'block';
+        });
+    }
 
-        const latInicio = data.lat_inicio;
-        const lngInicio = data.lng_inicio;
-        const latFin = data.lat_fin;
-        const lngFin = data.lng_fin;
-        const estado = data.estado || 'rojo';
+    function recuperarPassword() {
+      const email = document.getElementById('emailInput').value.trim();
+      const msgDiv = document.getElementById('loginMsg');
+      const errorDiv = document.getElementById('loginError');
 
-        // Color según estado
-        const color = estado === 'verde' ? '#00BB00' : '#FF2222';
+      if (!email) {
+        errorDiv.textContent = 'Introduce tu correo primero';
+        errorDiv.style.display = 'block';
+        return;
+      }
 
-        // Si ya existe la línea, la eliminamos para redibujarla
-        if (lineas[id]) {
-          mapa.removeLayer(lineas[id]);
-        }
+      auth.sendPasswordResetEmail(email)
+        .then(() => {
+          msgDiv.textContent = '✅ Email de recuperación enviado';
+          msgDiv.style.display = 'block';
+          errorDiv.style.display = 'none';
+        })
+        .catch(() => {
+          errorDiv.textContent = 'No se encontró ese correo';
+          errorDiv.style.display = 'block';
+        });
+    }
 
-        // Dibujar línea nueva
-        lineas[id] = L.polyline(
-          [[latInicio, lngInicio], [latFin, lngFin]],
-          {
-            color: color,
-            weight: 5,
-            opacity: 0.85
-          }
-        ).addTo(mapa);
-      });
-    }, (error) => {
-      document.getElementById('cargando').innerHTML = 
-        '❌ Error al cargar datos. Comprueba tu conexión.';
-      console.error('Error Firestore:', error);
+    function cerrarSesion() {
+      auth.signOut();
+    }
+
+    // Permitir login con Enter
+    document.getElementById('passwordInput').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') hacerLogin();
     });
-  </script>
-</body>
-</html>
+
+    // ============================================
+    // CONTROL DE SESIÓN
+    // ============================================
+    auth.onAuthStateChanged((user) => {
+      if (user) {
+        userId = user.uid;
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('mapScreen').style.display = 'block';
+        iniciarMapa();
+      } else {
+        userId = null;
+        document.getElementById('loginScreen').style.display = 'flex';
+        document.getElementById('mapScreen').style.display = 'none';
+        document.getElementById('loginBtn').textContent = 'Iniciar sesión';
+        document.getElementById('loginBtn').disabled = false;
+        if (watchId) navigator.geolocation.clearWatch(watchId);
+        if (mapa) { mapa.remove(); mapa = null; }
+      }
+    });
+
+    // ============================================
+    // INICIAR MAPA
+    //

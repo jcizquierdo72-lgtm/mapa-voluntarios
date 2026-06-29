@@ -29,115 +29,50 @@
       max-width: 360px;
       box-shadow: 0 10px 40px rgba(0,0,0,0.3);
     }
-    #loginBox h2 {
-      text-align: center;
-      margin-bottom: 8px;
-      color: #1a1a2e;
-      font-size: 24px;
-    }
-    #loginBox p {
-      text-align: center;
-      color: #666;
-      margin-bottom: 24px;
-      font-size: 14px;
-    }
+    #loginBox h2 { text-align: center; margin-bottom: 8px; color: #1a1a2e; font-size: 24px; }
+    #loginBox p { text-align: center; color: #666; margin-bottom: 24px; font-size: 14px; }
     #loginBox input {
-      width: 100%;
-      padding: 12px 16px;
-      margin-bottom: 16px;
-      border: 1px solid #ddd;
-      border-radius: 8px;
-      font-size: 16px;
-      outline: none;
+      width: 100%; padding: 12px 16px; margin-bottom: 16px;
+      border: 1px solid #ddd; border-radius: 8px; font-size: 16px; outline: none;
     }
     #loginBox input:focus { border-color: #4a90e2; }
     #loginBtn {
-      width: 100%;
-      padding: 14px;
-      background: #4a90e2;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      font-size: 16px;
-      font-weight: bold;
-      cursor: pointer;
+      width: 100%; padding: 14px; background: #4a90e2; color: white;
+      border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer;
     }
     #loginBtn:active { background: #357abd; }
     #forgotBtn {
-      width: 100%;
-      margin-top: 12px;
-      padding: 10px;
-      background: none;
-      border: none;
-      color: #4a90e2;
-      font-size: 14px;
-      cursor: pointer;
+      width: 100%; margin-top: 12px; padding: 10px; background: none;
+      border: none; color: #4a90e2; font-size: 14px; cursor: pointer;
     }
-    #loginError {
-      color: red;
-      font-size: 13px;
-      text-align: center;
-      margin-top: 8px;
-      display: none;
-    }
-    #loginMsg {
-      color: green;
-      font-size: 13px;
-      text-align: center;
-      margin-top: 8px;
-      display: none;
-    }
+    #loginError { color: red; font-size: 13px; text-align: center; margin-top: 8px; display: none; }
+    #loginMsg { color: green; font-size: 13px; text-align: center; margin-top: 8px; display: none; }
     #mapScreen { display: none; width: 100vw; height: 100vh; }
     #topBar {
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 50px;
-      background: #1a1a2e;
-      color: white;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 16px;
-      z-index: 1000;
-      font-size: 14px;
+      position: absolute; top: 0; left: 0; right: 0; height: 50px;
+      background: #1a1a2e; color: white; display: flex;
+      align-items: center; justify-content: space-between;
+      padding: 0 16px; z-index: 1000; font-size: 14px;
     }
     #topBar span { font-weight: bold; }
     #logoutBtn {
-      background: rgba(255,255,255,0.2);
-      border: none;
-      color: white;
-      padding: 6px 12px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 13px;
+      background: rgba(255,255,255,0.2); border: none; color: white;
+      padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
     }
     #cargando {
-      position: absolute;
-      bottom: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: white;
-      padding: 10px 20px;
-      border-radius: 20px;
-      font-size: 13px;
-      z-index: 1000;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: white; padding: 10px 20px; border-radius: 20px;
+      font-size: 13px; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
     }
     #contador {
-      position: absolute;
-      bottom: 60px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(0,0,0,0.7);
-      color: white;
-      padding: 8px 16px;
-      border-radius: 20px;
-      font-size: 12px;
-      z-index: 1000;
-      display: none;
-      white-space: nowrap;
+      position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.7); color: white; padding: 8px 16px;
+      border-radius: 20px; font-size: 12px; z-index: 1000; display: none; white-space: nowrap;
+    }
+    #debug {
+      position: absolute; bottom: 100px; left: 10px; right: 10px;
+      background: rgba(0,0,0,0.8); color: white; padding: 10px;
+      border-radius: 10px; font-size: 11px; z-index: 1000; display: none; word-break: break-all;
     }
   </style>
 </head>
@@ -163,8 +98,8 @@
     </div>
     <div id="mapa" style="margin-top:50px; height: calc(100vh - 50px);"></div>
     <div id="cargando">⏳ Cargando tramos...</div>
-<div id="contador"></div>
-<div id="debug" style="position:absolute; bottom:100px; left:10px; right:10px; background:rgba(0,0,0,0.8); color:white; padding:10px; border-radius:10px; font-size:11px; z-index:1000; display:none; word-break:break-all;"></div>
+    <div id="contador"></div>
+    <div id="debug"></div>
   </div>
 
   <script>
@@ -193,11 +128,9 @@
       const password = document.getElementById('passwordInput').value;
       const btnLogin = document.getElementById('loginBtn');
       const errorDiv = document.getElementById('loginError');
-
       errorDiv.style.display = 'none';
       btnLogin.textContent = 'Entrando...';
       btnLogin.disabled = true;
-
       auth.signInWithEmailAndPassword(email, password)
         .catch(() => {
           btnLogin.textContent = 'Iniciar sesión';
@@ -211,13 +144,11 @@
       const email = document.getElementById('emailInput').value.trim();
       const msgDiv = document.getElementById('loginMsg');
       const errorDiv = document.getElementById('loginError');
-
       if (!email) {
         errorDiv.textContent = 'Introduce tu correo primero';
         errorDiv.style.display = 'block';
         return;
       }
-
       auth.sendPasswordResetEmail(email)
         .then(() => {
           msgDiv.textContent = '✅ Email de recuperación enviado';
@@ -244,22 +175,27 @@
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
-function comprobarProximidad(lat, lng) {
-  const debug = document.getElementById('debug');
-  debug.style.display = 'block';
-  debug.textContent = 'GPS: ' + lat.toFixed(5) + ', ' + lng.toFixed(5);
-  console.log('GPS detectado - Lat:', lat, 'Lng:', lng);
+    function comprobarProximidad(lat, lng) {
+      const debug = document.getElementById('debug');
+      debug.style.display = 'block';
+
       db.collection('tramos_calles')
         .where('estado', '==', 'rojo')
         .get()
         .then((snapshot) => {
+          let minDist = 99999;
+          let tramosCerca = 0;
+
           snapshot.forEach((doc) => {
             const data = doc.data();
             const latCentro = (data.lat_inicio + data.lat_fin) / 2;
             const lngCentro = (data.lng_inicio + data.lng_fin) / 2;
             const distancia = calcularDistancia(lat, lng, latCentro, lngCentro);
 
+            if (distancia < minDist) minDist = distancia;
+
             if (distancia < 10) {
+              tramosCerca++;
               const voluntariosCerca = data.voluntarios_cerca || [];
               if (!voluntariosCerca.includes(userId)) {
                 const nuevaLista = [...voluntariosCerca, userId];
@@ -282,16 +218,30 @@ function comprobarProximidad(lat, lng) {
               }
             }
           });
+
+          debug.textContent =
+            'GPS: ' + lat.toFixed(5) + ', ' + lng.toFixed(5) +
+            ' | Tramos rojos: ' + snapshot.size +
+            ' | Más cercano: ' + Math.round(minDist) + 'm' +
+            ' | Dentro de 10m: ' + tramosCerca;
+        })
+        .catch((err) => {
+          debug.textContent = 'Error Firestore: ' + err.message;
         });
     }
 
     function iniciarGPS() {
-      if (!navigator.geolocation) return;
+      if (!navigator.geolocation) {
+        document.getElementById('debug').textContent = 'GPS no disponible en este dispositivo';
+        document.getElementById('debug').style.display = 'block';
+        return;
+      }
       watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          comprobarProximidad(pos.coords.latitude, pos.coords.longitude);
+        (pos) => comprobarProximidad(pos.coords.latitude, pos.coords.longitude),
+        (err) => {
+          document.getElementById('debug').textContent = 'GPS error: ' + err.message;
+          document.getElementById('debug').style.display = 'block';
         },
-        (err) => console.log('GPS error:', err),
         { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
       );
     }
@@ -335,8 +285,7 @@ function comprobarProximidad(lat, lng) {
       if (mapa) return;
       mapa = L.map('mapa');
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap',
-        maxZoom: 19
+        attribution: '© OpenStreetMap', maxZoom: 19
       }).addTo(mapa);
 
       if (navigator.geolocation) {

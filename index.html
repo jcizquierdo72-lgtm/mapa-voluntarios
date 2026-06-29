@@ -83,7 +83,10 @@
       <h2>🗺️ Mapa Voluntarios</h2>
       <p>Inicia sesión para continuar</p>
       <input type="email" id="emailInput" placeholder="Correo electrónico"/>
-      <input type="password" id="passwordInput" placeholder="Contraseña"/>
+    <div style="position:relative;">
+  <input type="password" id="passwordInput" placeholder="Contraseña" style="width:100%; padding:12px 16px; padding-right:45px; margin-bottom:16px; border:1px solid #ddd; border-radius:8px; font-size:16px; outline:none;"/>
+  <button id="togglePassword" style="position:absolute; right:12px; top:14px; background:none; border:none; cursor:pointer; font-size:18px; color:#666;">👁️</button>
+</div>
       <button id="loginBtn">Iniciar sesión</button>
       <button id="forgotBtn">¿Olvidaste tu contraseña?</button>
       <div id="loginError"></div>
@@ -322,6 +325,10 @@
       document.getElementById('loginBtn').addEventListener('click', hacerLogin);
       document.getElementById('forgotBtn').addEventListener('click', recuperarPassword);
       document.getElementById('logoutBtn').addEventListener('click', cerrarSesion);
+      document.getElementById('togglePassword').addEventListener('click', () => {
+  const input = document.getElementById('passwordInput');
+  input.type = input.type === 'password' ? 'text' : 'password';
+});
       document.getElementById('passwordInput').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') hacerLogin();
       });

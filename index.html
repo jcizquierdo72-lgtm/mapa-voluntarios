@@ -243,7 +243,8 @@
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
-    function comprobarProximidad(lat, lng) {
+  function comprobarProximidad(lat, lng) {
+  console.log('GPS detectado - Lat:', lat, 'Lng:', lng);
       db.collection('tramos_calles')
         .where('estado', '==', 'rojo')
         .get()

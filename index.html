@@ -197,14 +197,6 @@
                   doc.ref.update({ voluntarios_cerca: nuevaLista });
                 }
               }
-            } else {
-              const voluntariosCerca = data.voluntarios_cerca || [];
-              if (voluntariosCerca.includes(userId)) {
-                doc.ref.update({
-                  voluntarios_cerca: firebase.firestore.FieldValue.arrayRemove(userId)
-                });
-              }
-            }
           });
         });
     }

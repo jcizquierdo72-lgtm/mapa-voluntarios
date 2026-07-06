@@ -115,10 +115,29 @@
 
     let mapa = null;
     const lineas = {};
+    const iconosVoluntarios = {};
     let userId = null;
+    let userEmail = null;
     let watchId = null;
     let totalTramos = 0;
     let tramosVerdes = 0;
+
+    // Icono personalizado para voluntarios
+    function crearIcono(esPropio) {
+      return L.divIcon({
+        className: '',
+        html: `<div style="
+          width: 14px;
+          height: 14px;
+          background: ${esPropio ? '#0066FF' : '#FF6600'};
+          border: 2px solid white;
+          border-radius: 50%;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+        "></div>`,
+        iconSize: [14, 14],
+        iconAnchor: [7, 7]
+      });
+    }
 
     function hacerLogin() {
       const email = document.getElementById('emailInput').value.trim();
@@ -159,6 +178,10 @@
     }
 
     function cerrarSesion() {
+      // Eliminar posición del voluntario al cerrar sesión
+      if (userId) {
+        db.collection('voluntarios').doc(userId).delete();
+      }
       auth.signOut();
     }
 
@@ -172,7 +195,16 @@
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
-    function comprobarProximidad(lat, lng) {
+    function actualizarPosicion(lat, lng) {
+      // Guardar posición en Firestore
+      db.collection('voluntarios').doc(userId).set({
+        lat: lat,
+        lng: lng,
+        email: userEmail,
+        timestamp: firebase.firestore.FieldValue.serverTimestamp()
+      });
+
+      // Comprobar proximidad a tramos
       db.collection('tramos_calles')
         .where('estado', '==', 'rojo')
         .get()
@@ -197,6 +229,7 @@
                   doc.ref.update({ voluntarios_cerca: nuevaLista });
                 }
               }
+            }
           });
         });
     }
@@ -204,10 +237,42 @@
     function iniciarGPS() {
       if (!navigator.geolocation) return;
       watchId = navigator.geolocation.watchPosition(
-        (pos) => comprobarProximidad(pos.coords.latitude, pos.coords.longitude),
+        (pos) => actualizarPosicion(pos.coords.latitude, pos.coords.longitude),
         (err) => console.log('GPS error:', err),
         { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
       );
+    }
+
+    function escucharVoluntarios() {
+      db.collection('voluntarios').onSnapshot((snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          const doc = change.doc;
+          const id = doc.id;
+          const data = doc.data();
+
+          if (change.type === 'removed') {
+            if (iconosVoluntarios[id]) {
+              mapa.removeLayer(iconosVoluntarios[id]);
+              delete iconosVoluntarios[id];
+            }
+            return;
+          }
+
+          if (!data.lat || !data.lng) return;
+
+          const esPropio = id === userId;
+          const icono = crearIcono(esPropio);
+
+          if (iconosVoluntarios[id]) {
+            iconosVoluntarios[id].setLatLng([data.lat, data.lng]);
+            iconosVoluntarios[id].setIcon(icono);
+          } else {
+            iconosVoluntarios[id] = L.marker([data.lat, data.lng], { icon: icono })
+              .bindTooltip(data.email || id, { permanent: false, direction: 'top' })
+              .addTo(mapa);
+          }
+        });
+      });
     }
 
     function cargarTramos() {
@@ -263,16 +328,19 @@
 
       cargarTramos();
       iniciarGPS();
+      escucharVoluntarios();
     }
 
     auth.onAuthStateChanged((user) => {
       if (user) {
         userId = user.uid;
+        userEmail = user.email;
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('mapScreen').style.display = 'block';
         iniciarMapa();
       } else {
         userId = null;
+        userEmail = null;
         document.getElementById('loginScreen').style.display = 'flex';
         document.getElementById('mapScreen').style.display = 'none';
         document.getElementById('loginBtn').textContent = 'Iniciar sesión';

@@ -59,6 +59,12 @@
       background: rgba(255,255,255,0.2); border: none; color: white;
       padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
     }
+    #resetBtn {
+      display: none;
+      background: #CC0000; border: none; color: white;
+      padding: 6px 12px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; margin-left: 8px;
+    }
     #cargando {
       position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
       background: white; padding: 10px 20px; border-radius: 20px;
@@ -92,7 +98,10 @@
   <div id="mapScreen">
     <div id="topBar">
       <span>🗺️ Mapa Voluntarios</span>
-      <button id="logoutBtn">Cerrar sesión</button>
+      <div>
+        <button id="logoutBtn">Cerrar sesión</button>
+        <button id="resetBtn">🔄 Resetear mapa</button>
+      </div>
     </div>
     <div id="mapa" style="position:absolute; top:50px; left:0; right:0; bottom:0;"></div>
     <div id="cargando">⏳ Cargando tramos...</div>
@@ -113,6 +122,8 @@
     const auth = firebase.auth();
     const db = firebase.firestore();
 
+    const ADMIN_EMAIL = 'voluntario1@test.com';
+
     let mapa = null;
     const lineas = {};
     const iconosVoluntarios = {};
@@ -122,7 +133,6 @@
     let totalTramos = 0;
     let tramosVerdes = 0;
 
-    // Icono personalizado para voluntarios
     function crearIcono(esPropio) {
       return L.divIcon({
         className: '',
@@ -178,11 +188,50 @@
     }
 
     function cerrarSesion() {
-      // Eliminar posición del voluntario al cerrar sesión
       if (userId) {
         db.collection('voluntarios').doc(userId).delete();
       }
       auth.signOut();
+    }
+
+    function resetearMapa() {
+      if (!confirm('¿Seguro que quieres resetear todos los tramos a rojo? Esta acción no se puede deshacer.')) return;
+
+      const resetBtn = document.getElementById('resetBtn');
+      resetBtn.textContent = '⏳ Reseteando...';
+      resetBtn.disabled = true;
+
+      db.collection('tramos_calles').get().then((snapshot) => {
+        const BATCH_SIZE = 500;
+        let batch = db.batch();
+        let contador = 0;
+        let promesas = [];
+
+        snapshot.forEach((doc) => {
+          batch.update(doc.ref, {
+            estado: 'rojo',
+            voluntarios_cerca: [],
+            visitado_por: []
+          });
+          contador++;
+          if (contador === BATCH_SIZE) {
+            promesas.push(batch.commit());
+            batch = db.batch();
+            contador = 0;
+          }
+        });
+
+        if (contador > 0) promesas.push(batch.commit());
+
+        Promise.all(promesas).then(() => {
+          db.collection('voluntarios').get().then((snap) => {
+            snap.forEach((doc) => doc.ref.delete());
+          });
+          resetBtn.textContent = '🔄 Resetear mapa';
+          resetBtn.disabled = false;
+          alert('✅ Mapa reseteado correctamente.');
+        });
+      });
     }
 
     function calcularDistancia(lat1, lng1, lat2, lng2) {
@@ -196,7 +245,6 @@
     }
 
     function actualizarPosicion(lat, lng) {
-      // Guardar posición en Firestore
       db.collection('voluntarios').doc(userId).set({
         lat: lat,
         lng: lng,
@@ -204,7 +252,6 @@
         timestamp: firebase.firestore.FieldValue.serverTimestamp()
       });
 
-      // Comprobar proximidad a tramos
       db.collection('tramos_calles')
         .where('estado', '==', 'rojo')
         .get()
@@ -243,7 +290,7 @@
       );
     }
 
-function escucharVoluntarios() {
+    function escucharVoluntarios() {
       db.collection('voluntarios').onSnapshot((snapshot) => {
         snapshot.docs.forEach((doc) => {
           const id = doc.id;
@@ -251,7 +298,6 @@ function escucharVoluntarios() {
 
           if (!data.lat || !data.lng) return;
 
-          // Ocultar voluntarios sin actualización en más de 20 minutos
           if (data.timestamp) {
             const ahora = Date.now();
             const ultimaActualizacion = data.timestamp.toMillis();
@@ -278,7 +324,6 @@ function escucharVoluntarios() {
           }
         });
 
-        // Eliminar iconos de voluntarios que ya no están en Firestore
         Object.keys(iconosVoluntarios).forEach((id) => {
           if (!snapshot.docs.find(doc => doc.id === id)) {
             mapa.removeLayer(iconosVoluntarios[id]);
@@ -287,6 +332,7 @@ function escucharVoluntarios() {
         });
       });
     }
+
     function cargarTramos() {
       db.collection('tramos_calles').onSnapshot((snapshot) => {
         document.getElementById('cargando').style.display = 'none';
@@ -350,6 +396,9 @@ function escucharVoluntarios() {
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('mapScreen').style.display = 'block';
         iniciarMapa();
+        if (userEmail === ADMIN_EMAIL) {
+          document.getElementById('resetBtn').style.display = 'inline-block';
+        }
       } else {
         userId = null;
         userEmail = null;
@@ -357,6 +406,7 @@ function escucharVoluntarios() {
         document.getElementById('mapScreen').style.display = 'none';
         document.getElementById('loginBtn').textContent = 'Iniciar sesión';
         document.getElementById('loginBtn').disabled = false;
+        document.getElementById('resetBtn').style.display = 'none';
         if (watchId) navigator.geolocation.clearWatch(watchId);
         if (mapa) { mapa.remove(); mapa = null; }
       }
@@ -366,6 +416,7 @@ function escucharVoluntarios() {
       document.getElementById('loginBtn').addEventListener('click', hacerLogin);
       document.getElementById('forgotBtn').addEventListener('click', recuperarPassword);
       document.getElementById('logoutBtn').addEventListener('click', cerrarSesion);
+      document.getElementById('resetBtn').addEventListener('click', resetearMapa);
       document.getElementById('togglePassword').addEventListener('click', () => {
         const input = document.getElementById('passwordInput');
         input.type = input.type === 'password' ? 'text' : 'password';

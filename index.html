@@ -251,6 +251,20 @@ function escucharVoluntarios() {
 
           if (!data.lat || !data.lng) return;
 
+          // Ocultar voluntarios sin actualización en más de 20 minutos
+          if (data.timestamp) {
+            const ahora = Date.now();
+            const ultimaActualizacion = data.timestamp.toMillis();
+            const minutos = (ahora - ultimaActualizacion) / 60000;
+            if (minutos > 20) {
+              if (iconosVoluntarios[id]) {
+                mapa.removeLayer(iconosVoluntarios[id]);
+                delete iconosVoluntarios[id];
+              }
+              return;
+            }
+          }
+
           const esPropio = id === userId;
           const icono = crearIcono(esPropio);
 
@@ -273,7 +287,6 @@ function escucharVoluntarios() {
         });
       });
     }
-
     function cargarTramos() {
       db.collection('tramos_calles').onSnapshot((snapshot) => {
         document.getElementById('cargando').style.display = 'none';

@@ -243,20 +243,11 @@
       );
     }
 
-    function escucharVoluntarios() {
+function escucharVoluntarios() {
       db.collection('voluntarios').onSnapshot((snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          const doc = change.doc;
+        snapshot.docs.forEach((doc) => {
           const id = doc.id;
           const data = doc.data();
-
-          if (change.type === 'removed') {
-            if (iconosVoluntarios[id]) {
-              mapa.removeLayer(iconosVoluntarios[id]);
-              delete iconosVoluntarios[id];
-            }
-            return;
-          }
 
           if (!data.lat || !data.lng) return;
 
@@ -270,6 +261,14 @@
             iconosVoluntarios[id] = L.marker([data.lat, data.lng], { icon: icono })
               .bindTooltip(data.email || id, { permanent: false, direction: 'top' })
               .addTo(mapa);
+          }
+        });
+
+        // Eliminar iconos de voluntarios que ya no están en Firestore
+        Object.keys(iconosVoluntarios).forEach((id) => {
+          if (!snapshot.docs.find(doc => doc.id === id)) {
+            mapa.removeLayer(iconosVoluntarios[id]);
+            delete iconosVoluntarios[id];
           }
         });
       });

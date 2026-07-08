@@ -262,7 +262,7 @@
             const lngCentro = (data.lng_inicio + data.lng_fin) / 2;
             const distancia = calcularDistancia(lat, lng, latCentro, lngCentro);
 
-            if (distancia < 15) {
+            if (distancia < 12) {
               const voluntariosCerca = data.voluntarios_cerca || [];
               if (!voluntariosCerca.includes(userId)) {
                 const nuevaLista = [...voluntariosCerca, userId];

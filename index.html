@@ -122,24 +122,53 @@
     const auth = firebase.auth();
     const db = firebase.firestore();
 
-  const ADMIN_EMAILS = ['voluntarioadmin1@test.com', 'voluntarioadmin2@test.com'];
+    const ADMIN_EMAILS = ['voluntarioadmin1@test.com', 'voluntarioadmin2@test.com'];
+
+    // Colores por equipo
+    const COLORES_EQUIPO = {
+      '01': '#1a1a1a',  // Negro
+      '02': '#1a7a1a',  // Verde oscuro
+      '03': '#0000CC',  // Azul oscuro
+      '04': '#FFB6C1',  // Rosa pálido
+      '05': '#FFD700',  // Amarillo
+      '06': '#FF6600',  // Naranja
+      '07': '#B0B0B0',  // Gris claro
+      '08': '#66FF66',  // Verde claro
+      '09': '#66B2FF',  // Azul claro
+      '10': '#C68642',  // Marrón claro
+      '11': '#CC00AA',  // Violeta fucsia
+      '12': '#FFFFFF',  // Blanco
+    };
+
+    function obtenerEquipo(email) {
+      // Extrae el número de equipo del email, ej: voluntario03b@test.com → '03'
+      const match = email.match(/voluntario(\d{2})[abc]@/);
+      return match ? match[1] : null;
+    }
+
+    function obtenerColorEquipo(email) {
+      const equipo = obtenerEquipo(email);
+      return equipo ? (COLORES_EQUIPO[equipo] || '#00BB00') : '#00BB00';
+    }
 
     let mapa = null;
     const lineas = {};
     const iconosVoluntarios = {};
     let userId = null;
     let userEmail = null;
+    let userEquipo = null;
+    let userColor = null;
     let watchId = null;
     let totalTramos = 0;
     let tramosVerdes = 0;
 
-    function crearIcono(esPropio) {
+    function crearIcono(esPropio, color) {
       return L.divIcon({
         className: '',
         html: `<div style="
           width: 14px;
           height: 14px;
-          background: ${esPropio ? '#0066FF' : '#FF6600'};
+          background: ${esPropio ? '#0066FF' : color};
           border: 2px solid white;
           border-radius: 50%;
           box-shadow: 0 1px 4px rgba(0,0,0,0.4);
@@ -211,7 +240,8 @@
           batch.update(doc.ref, {
             estado: 'rojo',
             voluntarios_cerca: [],
-            visitado_por: []
+            visitado_por: [],
+            color_equipo: ''
           });
           contador++;
           if (contador === BATCH_SIZE) {
@@ -249,6 +279,8 @@
         lat: lat,
         lng: lng,
         email: userEmail,
+        equipo: userEquipo,
+        color: userColor,
         timestamp: firebase.firestore.FieldValue.serverTimestamp()
       });
 
@@ -268,7 +300,8 @@
                 const nuevaLista = [...voluntariosCerca, userId];
                 if (nuevaLista.length >= 2) {
                   doc.ref.update({
-                    estado: 'verde',
+                    estado: 'completado',
+                    color_equipo: userColor,
                     voluntarios_cerca: nuevaLista,
                     visitado_por: firebase.firestore.FieldValue.arrayUnion(userId)
                   });
@@ -312,7 +345,8 @@
           }
 
           const esPropio = id === userId;
-          const icono = crearIcono(esPropio);
+          const colorIcono = data.color || '#FF6600';
+          const icono = crearIcono(esPropio, colorIcono);
 
           if (iconosVoluntarios[id]) {
             iconosVoluntarios[id].setLatLng([data.lat, data.lng]);
@@ -345,14 +379,20 @@
           const id = doc.id;
           const estado = data.estado || 'rojo';
 
-          if (estado === 'verde') tramosVerdes++;
+          if (estado === 'completado') tramosVerdes++;
 
           if (change.type === 'removed') {
             if (lineas[id]) { mapa.removeLayer(lineas[id]); delete lineas[id]; }
             return;
           }
 
-          const color = estado === 'verde' ? '#00BB00' : '#FF2222';
+          let color;
+          if (estado === 'completado' && data.color_equipo) {
+            color = data.color_equipo;
+          } else {
+            color = '#FF2222';
+          }
+
           if (lineas[id]) mapa.removeLayer(lineas[id]);
 
           lineas[id] = L.polyline(
@@ -393,15 +433,19 @@
       if (user) {
         userId = user.uid;
         userEmail = user.email;
+        userEquipo = obtenerEquipo(user.email);
+        userColor = obtenerColorEquipo(user.email);
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('mapScreen').style.display = 'block';
         iniciarMapa();
-     if (ADMIN_EMAILS.includes(userEmail)) {
+        if (ADMIN_EMAILS.includes(userEmail)) {
           document.getElementById('resetBtn').style.display = 'inline-block';
         }
       } else {
         userId = null;
         userEmail = null;
+        userEquipo = null;
+        userColor = null;
         document.getElementById('loginScreen').style.display = 'flex';
         document.getElementById('mapScreen').style.display = 'none';
         document.getElementById('loginBtn').textContent = 'Iniciar sesión';

@@ -122,7 +122,7 @@
     const auth = firebase.auth();
     const db = firebase.firestore();
 
-    const ADMIN_EMAIL = 'voluntario1@test.com';
+  const ADMIN_EMAILS = ['voluntarioadmin1@test.com', 'voluntarioadmin2@test.com'];
 
     let mapa = null;
     const lineas = {};
@@ -396,7 +396,7 @@
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('mapScreen').style.display = 'block';
         iniciarMapa();
-        if (userEmail === ADMIN_EMAIL) {
+     if (ADMIN_EMAILS.includes(userEmail)) {
           document.getElementById('resetBtn').style.display = 'inline-block';
         }
       } else {

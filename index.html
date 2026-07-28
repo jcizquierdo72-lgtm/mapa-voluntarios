@@ -221,9 +221,12 @@
 
     function cerrarSesion() {
       if (userId && !esUsuarioAdmin) {
-        db.collection('voluntarios').doc(userId).delete();
+        db.collection('voluntarios').doc(userId).delete().then(() => {
+          auth.signOut();
+        });
+      } else {
+        auth.signOut();
       }
-      auth.signOut();
     }
 
     function resetearMapa() {
@@ -278,7 +281,6 @@
     }
 
     function actualizarPosicion(lat, lng) {
-      // Los admins no actualizan posición ni pintan calles
       if (esUsuarioAdmin) return;
 
       db.collection('voluntarios').doc(userId).set({
@@ -321,7 +323,6 @@
     }
 
     function iniciarGPS() {
-      // Los admins no usan GPS
       if (esUsuarioAdmin) return;
       if (!navigator.geolocation) return;
       watchId = navigator.geolocation.watchPosition(
@@ -333,23 +334,23 @@
 
     function escucharVoluntarios() {
       db.collection('voluntarios').onSnapshot((snapshot) => {
-        // Obtener IDs actuales en Firestore
-        const idsActuales = new Set(snapshot.docs.map(doc => doc.id));
-
-        // Eliminar iconos de voluntarios que ya no están
-        Object.keys(iconosVoluntarios).forEach((id) => {
-          if (!idsActuales.has(id)) {
-            mapa.removeLayer(iconosVoluntarios[id]);
-            delete iconosVoluntarios[id];
-          }
-        });
-
-        snapshot.docs.forEach((doc) => {
+        snapshot.docChanges().forEach((change) => {
+          const doc = change.doc;
           const id = doc.id;
-          const data = doc.data();
 
+          // Si el documento fue eliminado, quitamos el icono del mapa
+          if (change.type === 'removed') {
+            if (iconosVoluntarios[id]) {
+              mapa.removeLayer(iconosVoluntarios[id]);
+              delete iconosVoluntarios[id];
+            }
+            return;
+          }
+
+          const data = doc.data();
           if (!data.lat || !data.lng) return;
 
+          // Ocultar voluntarios sin actualización en más de 20 minutos
           if (data.timestamp) {
             const ahora = Date.now();
             const ultimaActualizacion = data.timestamp.toMillis();

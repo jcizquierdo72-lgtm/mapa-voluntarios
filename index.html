@@ -146,11 +146,7 @@
 
     function obtenerColorEquipo(email) {
       const equipo = obtenerEquipo(email);
-      return equipo ? (COLORES_EQUIPO[equipo] || '#00BB00') : null;
-    }
-
-    function esAdmin(email) {
-      return ADMIN_EMAILS.includes(email);
+      return equipo ? (COLORES_EQUIPO[equipo] || null) : null;
     }
 
     let mapa = null;
@@ -223,6 +219,8 @@
       if (userId && !esUsuarioAdmin) {
         db.collection('voluntarios').doc(userId).delete().then(() => {
           auth.signOut();
+        }).catch(() => {
+          auth.signOut();
         });
       } else {
         auth.signOut();
@@ -281,7 +279,8 @@
     }
 
     function actualizarPosicion(lat, lng) {
-      if (esUsuarioAdmin) return;
+      // Doble comprobación: admins y usuarios sin equipo no actualizan posición
+      if (esUsuarioAdmin || !userColor || !userEquipo) return;
 
       db.collection('voluntarios').doc(userId).set({
         lat: lat,
@@ -323,7 +322,8 @@
     }
 
     function iniciarGPS() {
-      if (esUsuarioAdmin) return;
+      // Doble comprobación: admins y usuarios sin equipo no usan GPS
+      if (esUsuarioAdmin || !userColor || !userEquipo) return;
       if (!navigator.geolocation) return;
       watchId = navigator.geolocation.watchPosition(
         (pos) => actualizarPosicion(pos.coords.latitude, pos.coords.longitude),
@@ -338,7 +338,6 @@
           const doc = change.doc;
           const id = doc.id;
 
-          // Si el documento fue eliminado, quitamos el icono del mapa
           if (change.type === 'removed') {
             if (iconosVoluntarios[id]) {
               mapa.removeLayer(iconosVoluntarios[id]);
@@ -348,9 +347,8 @@
           }
 
           const data = doc.data();
-          if (!data.lat || !data.lng) return;
+          if (!data.lat || !data.lng || !data.color) return;
 
-          // Ocultar voluntarios sin actualización en más de 20 minutos
           if (data.timestamp) {
             const ahora = Date.now();
             const ultimaActualizacion = data.timestamp.toMillis();
@@ -365,8 +363,7 @@
           }
 
           const esPropio = id === userId;
-          const colorIcono = data.color || '#FF6600';
-          const icono = crearIcono(esPropio, colorIcono);
+          const icono = crearIcono(esPropio, data.color);
 
           if (iconosVoluntarios[id]) {
             iconosVoluntarios[id].setLatLng([data.lat, data.lng]);
@@ -428,7 +425,7 @@
         attribution: '© OpenStreetMap', maxZoom: 19
       }).addTo(mapa);
 
-      if (!esUsuarioAdmin && navigator.geolocation) {
+      if (!esUsuarioAdmin && userEquipo && navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
           (pos) => mapa.setView([pos.coords.latitude, pos.coords.longitude], 17),
           () => mapa.setView([39.3900748, -3.2100984], 15)
@@ -446,12 +443,14 @@
       if (user) {
         userId = user.uid;
         userEmail = user.email;
-        esUsuarioAdmin = esAdmin(user.email);
+        esUsuarioAdmin = ADMIN_EMAILS.includes(user.email);
         userEquipo = obtenerEquipo(user.email);
         userColor = obtenerColorEquipo(user.email);
+
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('mapScreen').style.display = 'block';
         iniciarMapa();
+
         if (esUsuarioAdmin) {
           document.getElementById('resetBtn').style.display = 'inline-block';
         }

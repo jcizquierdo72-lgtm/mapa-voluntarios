@@ -124,31 +124,33 @@
 
     const ADMIN_EMAILS = ['voluntarioadmin1@test.com', 'voluntarioadmin2@test.com'];
 
-    // Colores por equipo
     const COLORES_EQUIPO = {
-      '01': '#1a1a1a',  // Negro
-      '02': '#1a7a1a',  // Verde oscuro
-      '03': '#0000CC',  // Azul oscuro
-      '04': '#FFB6C1',  // Rosa pálido
-      '05': '#FFD700',  // Amarillo
-      '06': '#FF6600',  // Naranja
-      '07': '#B0B0B0',  // Gris claro
-      '08': '#66FF66',  // Verde claro
-      '09': '#66B2FF',  // Azul claro
-      '10': '#C68642',  // Marrón claro
-      '11': '#CC00AA',  // Violeta fucsia
-      '12': '#FFFFFF',  // Blanco
+      '01': '#1a1a1a',
+      '02': '#1a7a1a',
+      '03': '#0000CC',
+      '04': '#FFB6C1',
+      '05': '#FFD700',
+      '06': '#FF6600',
+      '07': '#B0B0B0',
+      '08': '#66FF66',
+      '09': '#66B2FF',
+      '10': '#C68642',
+      '11': '#CC00AA',
+      '12': '#FFFFFF',
     };
 
     function obtenerEquipo(email) {
-      // Extrae el número de equipo del email, ej: voluntario03b@test.com → '03'
       const match = email.match(/voluntario(\d{2})[abc]@/);
       return match ? match[1] : null;
     }
 
     function obtenerColorEquipo(email) {
       const equipo = obtenerEquipo(email);
-      return equipo ? (COLORES_EQUIPO[equipo] || '#00BB00') : '#00BB00';
+      return equipo ? (COLORES_EQUIPO[equipo] || '#00BB00') : null;
+    }
+
+    function esAdmin(email) {
+      return ADMIN_EMAILS.includes(email);
     }
 
     let mapa = null;
@@ -158,9 +160,10 @@
     let userEmail = null;
     let userEquipo = null;
     let userColor = null;
+    let esUsuarioAdmin = false;
     let watchId = null;
     let totalTramos = 0;
-    let tramosVerdes = 0;
+    let tramosCompletados = 0;
 
     function crearIcono(esPropio, color) {
       return L.divIcon({
@@ -217,7 +220,7 @@
     }
 
     function cerrarSesion() {
-      if (userId) {
+      if (userId && !esUsuarioAdmin) {
         db.collection('voluntarios').doc(userId).delete();
       }
       auth.signOut();
@@ -275,6 +278,9 @@
     }
 
     function actualizarPosicion(lat, lng) {
+      // Los admins no actualizan posición ni pintan calles
+      if (esUsuarioAdmin) return;
+
       db.collection('voluntarios').doc(userId).set({
         lat: lat,
         lng: lng,
@@ -315,6 +321,8 @@
     }
 
     function iniciarGPS() {
+      // Los admins no usan GPS
+      if (esUsuarioAdmin) return;
       if (!navigator.geolocation) return;
       watchId = navigator.geolocation.watchPosition(
         (pos) => actualizarPosicion(pos.coords.latitude, pos.coords.longitude),
@@ -325,6 +333,17 @@
 
     function escucharVoluntarios() {
       db.collection('voluntarios').onSnapshot((snapshot) => {
+        // Obtener IDs actuales en Firestore
+        const idsActuales = new Set(snapshot.docs.map(doc => doc.id));
+
+        // Eliminar iconos de voluntarios que ya no están
+        Object.keys(iconosVoluntarios).forEach((id) => {
+          if (!idsActuales.has(id)) {
+            mapa.removeLayer(iconosVoluntarios[id]);
+            delete iconosVoluntarios[id];
+          }
+        });
+
         snapshot.docs.forEach((doc) => {
           const id = doc.id;
           const data = doc.data();
@@ -357,13 +376,6 @@
               .addTo(mapa);
           }
         });
-
-        Object.keys(iconosVoluntarios).forEach((id) => {
-          if (!snapshot.docs.find(doc => doc.id === id)) {
-            mapa.removeLayer(iconosVoluntarios[id]);
-            delete iconosVoluntarios[id];
-          }
-        });
       });
     }
 
@@ -371,7 +383,7 @@
       db.collection('tramos_calles').onSnapshot((snapshot) => {
         document.getElementById('cargando').style.display = 'none';
         totalTramos = snapshot.size;
-        tramosVerdes = 0;
+        tramosCompletados = 0;
 
         snapshot.docChanges().forEach((change) => {
           const doc = change.doc;
@@ -379,7 +391,7 @@
           const id = doc.id;
           const estado = data.estado || 'rojo';
 
-          if (estado === 'completado') tramosVerdes++;
+          if (estado === 'completado') tramosCompletados++;
 
           if (change.type === 'removed') {
             if (lineas[id]) { mapa.removeLayer(lineas[id]); delete lineas[id]; }
@@ -403,8 +415,8 @@
 
         const contador = document.getElementById('contador');
         contador.style.display = 'block';
-        const porcentaje = totalTramos > 0 ? Math.round((tramosVerdes / totalTramos) * 100) : 0;
-        contador.textContent = `✅ ${tramosVerdes}/${totalTramos} tramos recorridos (${porcentaje}%)`;
+        const porcentaje = totalTramos > 0 ? Math.round((tramosCompletados / totalTramos) * 100) : 0;
+        contador.textContent = `✅ ${tramosCompletados}/${totalTramos} tramos recorridos (${porcentaje}%)`;
       });
     }
 
@@ -415,7 +427,7 @@
         attribution: '© OpenStreetMap', maxZoom: 19
       }).addTo(mapa);
 
-      if (navigator.geolocation) {
+      if (!esUsuarioAdmin && navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
           (pos) => mapa.setView([pos.coords.latitude, pos.coords.longitude], 17),
           () => mapa.setView([39.3900748, -3.2100984], 15)
@@ -433,17 +445,19 @@
       if (user) {
         userId = user.uid;
         userEmail = user.email;
+        esUsuarioAdmin = esAdmin(user.email);
         userEquipo = obtenerEquipo(user.email);
         userColor = obtenerColorEquipo(user.email);
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('mapScreen').style.display = 'block';
         iniciarMapa();
-        if (ADMIN_EMAILS.includes(userEmail)) {
+        if (esUsuarioAdmin) {
           document.getElementById('resetBtn').style.display = 'inline-block';
         }
       } else {
         userId = null;
         userEmail = null;
+        esUsuarioAdmin = false;
         userEquipo = null;
         userColor = null;
         document.getElementById('loginScreen').style.display = 'flex';

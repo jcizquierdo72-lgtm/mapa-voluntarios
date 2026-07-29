@@ -139,6 +139,9 @@
       '12': '#FFFFFF',
     };
 
+    // ID único para esta pestaña/sesión
+    const SESSION_ID = Math.random().toString(36).substr(2, 9);
+
     function obtenerEquipo(email) {
       const match = email.match(/voluntario(\d{2})[abc]@/);
       return match ? match[1] : null;
@@ -160,6 +163,7 @@
     let watchId = null;
     let totalTramos = 0;
     let tramosCompletados = 0;
+    let sesionListener = null;
 
     function crearIcono(esPropio, color) {
       return L.divIcon({
@@ -177,6 +181,14 @@
       });
     }
 
+    function mostrarErrorLogin(mensaje) {
+      const errorDiv = document.getElementById('loginError');
+      errorDiv.textContent = mensaje;
+      errorDiv.style.display = 'block';
+      document.getElementById('loginBtn').textContent = 'Iniciar sesión';
+      document.getElementById('loginBtn').disabled = false;
+    }
+
     function hacerLogin() {
       const email = document.getElementById('emailInput').value.trim();
       const password = document.getElementById('passwordInput').value;
@@ -187,10 +199,7 @@
       btnLogin.disabled = true;
       auth.signInWithEmailAndPassword(email, password)
         .catch(() => {
-          btnLogin.textContent = 'Iniciar sesión';
-          btnLogin.disabled = false;
-          errorDiv.textContent = 'Correo o contraseña incorrectos';
-          errorDiv.style.display = 'block';
+          mostrarErrorLogin('Correo o contraseña incorrectos');
         });
     }
 
@@ -279,29 +288,22 @@
     }
 
     function procesarTramo(docRef) {
-      // Usamos transacción para evitar condiciones de carrera
       return db.runTransaction((transaction) => {
         return transaction.get(docRef).then((tramDoc) => {
           if (!tramDoc.exists) return;
           const data = tramDoc.data();
-
-          // Si ya fue completado, no hacer nada
           if (data.estado !== 'rojo') return;
 
           const voluntariosCerca = data.voluntarios_cerca || [];
           const equiposCerca = data.equipos_cerca || [];
 
-          // Si este voluntario ya está registrado, no hacer nada
           if (voluntariosCerca.includes(userId)) return;
 
           const nuevaLista = [...voluntariosCerca, userId];
           const nuevosEquipos = [...equiposCerca, userEquipo];
-
-          // Contar cuántos voluntarios del MISMO equipo están cerca
           const conteoEquipo = nuevosEquipos.filter(e => e === userEquipo).length;
 
           if (conteoEquipo >= 2) {
-            // Dos del mismo equipo → completar tramo con color del equipo
             transaction.update(docRef, {
               estado: 'completado',
               color_equipo: userColor,
@@ -310,7 +312,6 @@
               visitado_por: firebase.firestore.FieldValue.arrayUnion(userId)
             });
           } else {
-            // Solo uno del equipo → registrar pero no completar
             transaction.update(docRef, {
               voluntarios_cerca: nuevaLista,
               equipos_cerca: nuevosEquipos
@@ -323,17 +324,16 @@
     function actualizarPosicion(lat, lng) {
       if (esUsuarioAdmin || !userColor || !userEquipo) return;
 
-      // Actualizar posición en Firestore
       db.collection('voluntarios').doc(userId).set({
         lat: lat,
         lng: lng,
         email: userEmail,
         equipo: userEquipo,
         color: userColor,
+        session_id: SESSION_ID,
         timestamp: firebase.firestore.FieldValue.serverTimestamp()
       });
 
-      // Buscar tramos cercanos desde el servidor (sin caché)
       db.collection('tramos_calles')
         .where('estado', '==', 'rojo')
         .get({ source: 'server' })
@@ -343,10 +343,7 @@
             const latCentro = (data.lat_inicio + data.lat_fin) / 2;
             const lngCentro = (data.lng_inicio + data.lng_fin) / 2;
             const distancia = calcularDistancia(lat, lng, latCentro, lngCentro);
-
-            if (distancia < 12) {
-              procesarTramo(doc.ref);
-            }
+            if (distancia < 12) procesarTramo(doc.ref);
           });
         });
     }
@@ -361,9 +358,32 @@
       );
     }
 
-  function escucharVoluntarios() {
+    function vigilarSesionDuplicada() {
+      if (esUsuarioAdmin || !userEquipo) return;
+
+      // Escuchar cambios en el documento del voluntario
+      sesionListener = db.collection('voluntarios').doc(userId)
+        .onSnapshot((doc) => {
+          if (!doc.exists) return;
+          const data = doc.data();
+
+          // Si el session_id del documento no es el nuestro,
+          // significa que otro dispositivo tomó la sesión
+          if (data.session_id && data.session_id !== SESSION_ID) {
+            // Otro dispositivo está usando este usuario
+            if (sesionListener) sesionListener();
+            if (watchId) navigator.geolocation.clearWatch(watchId);
+            auth.signOut().then(() => {
+              document.getElementById('loginError').textContent =
+                '⚠️ Este usuario ya está en uso en otro dispositivo. Cierra esa sesión primero.';
+              document.getElementById('loginError').style.display = 'block';
+            });
+          }
+        });
+    }
+
+    function escucharVoluntarios() {
       db.collection('voluntarios').onSnapshot((snapshot) => {
-        // Procesar todos los documentos en cada actualización
         const idsActuales = new Set();
 
         snapshot.docs.forEach((doc) => {
@@ -399,7 +419,6 @@
           }
         });
 
-        // Eliminar iconos de voluntarios que ya no están en Firestore
         Object.keys(iconosVoluntarios).forEach((id) => {
           if (!idsActuales.has(id)) {
             mapa.removeLayer(iconosVoluntarios[id]);
@@ -469,6 +488,7 @@
       cargarTramos();
       iniciarGPS();
       escucharVoluntarios();
+      vigilarSesionDuplicada();
     }
 
     auth.onAuthStateChanged((user) => {
@@ -492,6 +512,7 @@
         esUsuarioAdmin = false;
         userEquipo = null;
         userColor = null;
+        if (sesionListener) { sesionListener(); sesionListener = null; }
         document.getElementById('loginScreen').style.display = 'flex';
         document.getElementById('mapScreen').style.display = 'none';
         document.getElementById('loginBtn').textContent = 'Iniciar sesión';

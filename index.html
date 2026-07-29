@@ -253,6 +253,7 @@
           batch.update(doc.ref, {
             estado: 'rojo',
             voluntarios_cerca: [],
+            equipos_cerca: [],
             visitado_por: [],
             color_equipo: ''
           });
@@ -310,19 +311,30 @@
             const lngCentro = (data.lng_inicio + data.lng_fin) / 2;
             const distancia = calcularDistancia(lat, lng, latCentro, lngCentro);
 
-            if (distancia < 12) {
+if (distancia < 12) {
               const voluntariosCerca = data.voluntarios_cerca || [];
+              const equiposCerca = data.equipos_cerca || [];
+
               if (!voluntariosCerca.includes(userId)) {
                 const nuevaLista = [...voluntariosCerca, userId];
-                if (nuevaLista.length >= 2) {
+                const nuevosEquipos = [...equiposCerca, userEquipo];
+
+                // Comprobar si hay al menos 2 voluntarios del mismo equipo
+                const conteoEquipo = nuevosEquipos.filter(e => e === userEquipo).length;
+
+                if (conteoEquipo >= 2) {
                   doc.ref.update({
                     estado: 'completado',
                     color_equipo: userColor,
                     voluntarios_cerca: nuevaLista,
+                    equipos_cerca: nuevosEquipos,
                     visitado_por: firebase.firestore.FieldValue.arrayUnion(userId)
                   });
                 } else {
-                  doc.ref.update({ voluntarios_cerca: nuevaLista });
+                  doc.ref.update({
+                    voluntarios_cerca: nuevaLista,
+                    equipos_cerca: nuevosEquipos
+                  });
                 }
               }
             }

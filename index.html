@@ -491,7 +491,7 @@
       vigilarSesionDuplicada();
     }
 
-    auth.onAuthStateChanged((user) => {
+   auth.onAuthStateChanged((user) => {
       if (user) {
         userId = user.uid;
         userEmail = user.email;
@@ -499,13 +499,46 @@
         userEquipo = obtenerEquipo(user.email);
         userColor = obtenerColorEquipo(user.email);
 
-        document.getElementById('loginScreen').style.display = 'none';
-        document.getElementById('mapScreen').style.display = 'block';
-        iniciarMapa();
-
+        // Los admins entran directamente sin comprobación
         if (esUsuarioAdmin) {
+          document.getElementById('loginScreen').style.display = 'none';
+          document.getElementById('mapScreen').style.display = 'block';
+          iniciarMapa();
           document.getElementById('resetBtn').style.display = 'inline-block';
+          return;
         }
+
+        // Voluntarios: comprobar si ya hay sesión activa
+        db.collection('voluntarios').doc(userId).get({ source: 'server' })
+          .then((doc) => {
+            if (doc.exists) {
+              const data = doc.data();
+              // Si hay un session_id distinto al nuestro, hay otro dispositivo activo
+              if (data.session_id && data.session_id !== SESSION_ID) {
+                // Cerrar sesión inmediatamente
+                auth.signOut().then(() => {
+                  document.getElementById('loginError').textContent =
+                    '⚠️ Este usuario ya está activo en otro dispositivo.';
+                  document.getElementById('loginError').style.display = 'block';
+                  document.getElementById('loginBtn').textContent = 'Iniciar sesión';
+                  document.getElementById('loginBtn').disabled = false;
+                });
+                return;
+              }
+            }
+
+            // No hay sesión duplicada, entramos normalmente
+            document.getElementById('loginScreen').style.display = 'none';
+            document.getElementById('mapScreen').style.display = 'block';
+            iniciarMapa();
+          })
+          .catch(() => {
+            // Si hay error de red, entramos igualmente
+            document.getElementById('loginScreen').style.display = 'none';
+            document.getElementById('mapScreen').style.display = 'block';
+            iniciarMapa();
+          });
+
       } else {
         userId = null;
         userEmail = null;
@@ -522,7 +555,6 @@
         if (mapa) { mapa.remove(); mapa = null; }
       }
     });
-
     document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('loginBtn').addEventListener('click', hacerLogin);
       document.getElementById('forgotBtn').addEventListener('click', recuperarPassword);

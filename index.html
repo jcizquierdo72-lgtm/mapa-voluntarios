@@ -215,22 +215,12 @@
         });
     }
 
-   function cerrarSesion() {
+    function cerrarSesion() {
       if (userId && !esUsuarioAdmin) {
         const docRef = db.collection('voluntarios').doc(userId);
-        const idParaBorrar = userId;
         docRef.delete()
-          .then(() => {
-            console.log('Documento borrado correctamente:', idParaBorrar);
-            auth.signOut();
-          })
-          .catch((error) => {
-            console.error('Error al borrar documento:', error);
-            // Intentamos borrar de nuevo antes de cerrar sesión
-            docRef.delete().finally(() => {
-              auth.signOut();
-            });
-          });
+          .then(() => auth.signOut())
+          .catch(() => auth.signOut());
       } else {
         auth.signOut();
       }
@@ -288,10 +278,52 @@
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
+    function procesarTramo(docRef) {
+      // Usamos transacción para evitar condiciones de carrera
+      return db.runTransaction((transaction) => {
+        return transaction.get(docRef).then((tramDoc) => {
+          if (!tramDoc.exists) return;
+          const data = tramDoc.data();
+
+          // Si ya fue completado, no hacer nada
+          if (data.estado !== 'rojo') return;
+
+          const voluntariosCerca = data.voluntarios_cerca || [];
+          const equiposCerca = data.equipos_cerca || [];
+
+          // Si este voluntario ya está registrado, no hacer nada
+          if (voluntariosCerca.includes(userId)) return;
+
+          const nuevaLista = [...voluntariosCerca, userId];
+          const nuevosEquipos = [...equiposCerca, userEquipo];
+
+          // Contar cuántos voluntarios del MISMO equipo están cerca
+          const conteoEquipo = nuevosEquipos.filter(e => e === userEquipo).length;
+
+          if (conteoEquipo >= 2) {
+            // Dos del mismo equipo → completar tramo con color del equipo
+            transaction.update(docRef, {
+              estado: 'completado',
+              color_equipo: userColor,
+              voluntarios_cerca: nuevaLista,
+              equipos_cerca: nuevosEquipos,
+              visitado_por: firebase.firestore.FieldValue.arrayUnion(userId)
+            });
+          } else {
+            // Solo uno del equipo → registrar pero no completar
+            transaction.update(docRef, {
+              voluntarios_cerca: nuevaLista,
+              equipos_cerca: nuevosEquipos
+            });
+          }
+        });
+      }).catch((err) => console.log('Error en transacción:', err));
+    }
+
     function actualizarPosicion(lat, lng) {
-      // Doble comprobación: admins y usuarios sin equipo no actualizan posición
       if (esUsuarioAdmin || !userColor || !userEquipo) return;
 
+      // Actualizar posición en Firestore
       db.collection('voluntarios').doc(userId).set({
         lat: lat,
         lng: lng,
@@ -301,9 +333,10 @@
         timestamp: firebase.firestore.FieldValue.serverTimestamp()
       });
 
+      // Buscar tramos cercanos desde el servidor (sin caché)
       db.collection('tramos_calles')
         .where('estado', '==', 'rojo')
-        .get()
+        .get({ source: 'server' })
         .then((snapshot) => {
           snapshot.forEach((doc) => {
             const data = doc.data();
@@ -311,39 +344,14 @@
             const lngCentro = (data.lng_inicio + data.lng_fin) / 2;
             const distancia = calcularDistancia(lat, lng, latCentro, lngCentro);
 
-if (distancia < 12) {
-              const voluntariosCerca = data.voluntarios_cerca || [];
-              const equiposCerca = data.equipos_cerca || [];
-
-              if (!voluntariosCerca.includes(userId)) {
-                const nuevaLista = [...voluntariosCerca, userId];
-                const nuevosEquipos = [...equiposCerca, userEquipo];
-
-                // Comprobar si hay al menos 2 voluntarios del mismo equipo
-                const conteoEquipo = nuevosEquipos.filter(e => e === userEquipo).length;
-
-                if (conteoEquipo >= 2) {
-                  doc.ref.update({
-                    estado: 'completado',
-                    color_equipo: userColor,
-                    voluntarios_cerca: nuevaLista,
-                    equipos_cerca: nuevosEquipos,
-                    visitado_por: firebase.firestore.FieldValue.arrayUnion(userId)
-                  });
-                } else {
-                  doc.ref.update({
-                    voluntarios_cerca: nuevaLista,
-                    equipos_cerca: nuevosEquipos
-                  });
-                }
-              }
+            if (distancia < 12) {
+              procesarTramo(doc.ref);
             }
           });
         });
     }
 
     function iniciarGPS() {
-      // Doble comprobación: admins y usuarios sin equipo no usan GPS
       if (esUsuarioAdmin || !userColor || !userEquipo) return;
       if (!navigator.geolocation) return;
       watchId = navigator.geolocation.watchPosition(

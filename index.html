@@ -139,8 +139,8 @@
       '12': '#FFFFFF',
     };
 
-    // ID único para esta pestaña/sesión
     const SESSION_ID = Math.random().toString(36).substr(2, 9);
+    const MINUTOS_INACTIVO = 30;
 
     function obtenerEquipo(email) {
       const match = email.match(/voluntario(\d{2})[abc]@/);
@@ -181,14 +181,6 @@
       });
     }
 
-    function mostrarErrorLogin(mensaje) {
-      const errorDiv = document.getElementById('loginError');
-      errorDiv.textContent = mensaje;
-      errorDiv.style.display = 'block';
-      document.getElementById('loginBtn').textContent = 'Iniciar sesión';
-      document.getElementById('loginBtn').disabled = false;
-    }
-
     function hacerLogin() {
       const email = document.getElementById('emailInput').value.trim();
       const password = document.getElementById('passwordInput').value;
@@ -199,7 +191,10 @@
       btnLogin.disabled = true;
       auth.signInWithEmailAndPassword(email, password)
         .catch(() => {
-          mostrarErrorLogin('Correo o contraseña incorrectos');
+          btnLogin.textContent = 'Iniciar sesión';
+          btnLogin.disabled = false;
+          errorDiv.textContent = 'Correo o contraseña incorrectos';
+          errorDiv.style.display = 'block';
         });
     }
 
@@ -224,15 +219,41 @@
         });
     }
 
+    function borrarDocumentoVoluntario() {
+      if (!userId || esUsuarioAdmin) return;
+      const docRef = db.collection('voluntarios').doc(userId);
+      // Intentamos borrar varias veces con intervalos para cubrir
+      // casos donde el navegador interrumpe la operación
+      docRef.delete().catch(() => {});
+      setTimeout(() => docRef.delete().catch(() => {}), 300);
+      setTimeout(() => docRef.delete().catch(() => {}), 800);
+    }
+
     function cerrarSesion() {
       if (userId && !esUsuarioAdmin) {
-        const docRef = db.collection('voluntarios').doc(userId);
-        docRef.delete()
-          .then(() => auth.signOut())
-          .catch(() => auth.signOut());
+        borrarDocumentoVoluntario();
+        setTimeout(() => auth.signOut(), 1000);
       } else {
         auth.signOut();
       }
+    }
+
+    // Limpiar voluntarios inactivos hace más de 30 minutos
+    function limpiarVoluntariosInactivos() {
+      const limiteMs = MINUTOS_INACTIVO * 60 * 1000;
+      const ahora = Date.now();
+
+      db.collection('voluntarios').get({ source: 'server' }).then((snapshot) => {
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          if (data.timestamp) {
+            const ultimaActualizacion = data.timestamp.toMillis();
+            if (ahora - ultimaActualizacion > limiteMs) {
+              doc.ref.delete().catch(() => {});
+            }
+          }
+        });
+      });
     }
 
     function resetearMapa() {
@@ -358,30 +379,6 @@
       );
     }
 
-    function vigilarSesionDuplicada() {
-      if (esUsuarioAdmin || !userEquipo) return;
-
-      // Escuchar cambios en el documento del voluntario
-      sesionListener = db.collection('voluntarios').doc(userId)
-        .onSnapshot((doc) => {
-          if (!doc.exists) return;
-          const data = doc.data();
-
-          // Si el session_id del documento no es el nuestro,
-          // significa que otro dispositivo tomó la sesión
-          if (data.session_id && data.session_id !== SESSION_ID) {
-            // Otro dispositivo está usando este usuario
-            if (sesionListener) sesionListener();
-            if (watchId) navigator.geolocation.clearWatch(watchId);
-            auth.signOut().then(() => {
-              document.getElementById('loginError').textContent =
-                '⚠️ Este usuario ya está en uso en otro dispositivo. Cierra esa sesión primero.';
-              document.getElementById('loginError').style.display = 'block';
-            });
-          }
-        });
-    }
-
     function escucharVoluntarios() {
       db.collection('voluntarios').onSnapshot((snapshot) => {
         const idsActuales = new Set();
@@ -397,7 +394,7 @@
             const ahora = Date.now();
             const ultimaActualizacion = data.timestamp.toMillis();
             const minutos = (ahora - ultimaActualizacion) / 60000;
-            if (minutos > 20) {
+            if (minutos > MINUTOS_INACTIVO) {
               if (iconosVoluntarios[id]) {
                 mapa.removeLayer(iconosVoluntarios[id]);
                 delete iconosVoluntarios[id];
@@ -488,10 +485,29 @@
       cargarTramos();
       iniciarGPS();
       escucharVoluntarios();
-      vigilarSesionDuplicada();
+
+      // Limpiar voluntarios inactivos al entrar
+      limpiarVoluntariosInactivos();
+
+      // Limpiar cada 10 minutos mientras la app está abierta
+      setInterval(limpiarVoluntariosInactivos, 10 * 60 * 1000);
     }
 
-   auth.onAuthStateChanged((user) => {
+    // Intentar borrar documento cuando el usuario cierra la pestaña
+    window.addEventListener('beforeunload', () => {
+      if (userId && !esUsuarioAdmin) {
+        borrarDocumentoVoluntario();
+      }
+    });
+
+    // Intentar borrar documento cuando la app va a segundo plano
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && userId && !esUsuarioAdmin) {
+        borrarDocumentoVoluntario();
+      }
+    });
+
+    auth.onAuthStateChanged((user) => {
       if (user) {
         userId = user.uid;
         userEmail = user.email;
@@ -499,7 +515,6 @@
         userEquipo = obtenerEquipo(user.email);
         userColor = obtenerColorEquipo(user.email);
 
-        // Los admins entran directamente sin comprobación
         if (esUsuarioAdmin) {
           document.getElementById('loginScreen').style.display = 'none';
           document.getElementById('mapScreen').style.display = 'block';
@@ -508,14 +523,11 @@
           return;
         }
 
-        // Voluntarios: comprobar si ya hay sesión activa
         db.collection('voluntarios').doc(userId).get({ source: 'server' })
           .then((doc) => {
             if (doc.exists) {
               const data = doc.data();
-              // Si hay un session_id distinto al nuestro, hay otro dispositivo activo
               if (data.session_id && data.session_id !== SESSION_ID) {
-                // Cerrar sesión inmediatamente
                 auth.signOut().then(() => {
                   document.getElementById('loginError').textContent =
                     '⚠️ Este usuario ya está activo en otro dispositivo.';
@@ -527,13 +539,11 @@
               }
             }
 
-            // No hay sesión duplicada, entramos normalmente
             document.getElementById('loginScreen').style.display = 'none';
             document.getElementById('mapScreen').style.display = 'block';
             iniciarMapa();
           })
           .catch(() => {
-            // Si hay error de red, entramos igualmente
             document.getElementById('loginScreen').style.display = 'none';
             document.getElementById('mapScreen').style.display = 'block';
             iniciarMapa();
@@ -555,6 +565,7 @@
         if (mapa) { mapa.remove(); mapa = null; }
       }
     });
+
     document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('loginBtn').addEventListener('click', hacerLogin);
       document.getElementById('forgotBtn').addEventListener('click', recuperarPassword);

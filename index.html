@@ -361,21 +361,16 @@
       );
     }
 
-    function escucharVoluntarios() {
+  function escucharVoluntarios() {
       db.collection('voluntarios').onSnapshot((snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          const doc = change.doc;
+        // Procesar todos los documentos en cada actualización
+        const idsActuales = new Set();
+
+        snapshot.docs.forEach((doc) => {
           const id = doc.id;
-
-          if (change.type === 'removed') {
-            if (iconosVoluntarios[id]) {
-              mapa.removeLayer(iconosVoluntarios[id]);
-              delete iconosVoluntarios[id];
-            }
-            return;
-          }
-
           const data = doc.data();
+          idsActuales.add(id);
+
           if (!data.lat || !data.lng || !data.color) return;
 
           if (data.timestamp) {
@@ -401,6 +396,14 @@
             iconosVoluntarios[id] = L.marker([data.lat, data.lng], { icon: icono })
               .bindTooltip(data.email || id, { permanent: false, direction: 'top' })
               .addTo(mapa);
+          }
+        });
+
+        // Eliminar iconos de voluntarios que ya no están en Firestore
+        Object.keys(iconosVoluntarios).forEach((id) => {
+          if (!idsActuales.has(id)) {
+            mapa.removeLayer(iconosVoluntarios[id]);
+            delete iconosVoluntarios[id];
           }
         });
       });

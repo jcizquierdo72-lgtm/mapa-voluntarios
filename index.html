@@ -141,6 +141,7 @@
 
     const SESSION_ID = Math.random().toString(36).substr(2, 9);
     const MINUTOS_INACTIVO = 30;
+    const SEGUNDOS_SESION_ACTIVA = 60;
 
     function obtenerEquipo(email) {
       const match = email.match(/voluntario(\d{2})[abc]@/);
@@ -222,8 +223,6 @@
     function borrarDocumentoVoluntario() {
       if (!userId || esUsuarioAdmin) return;
       const docRef = db.collection('voluntarios').doc(userId);
-      // Intentamos borrar varias veces con intervalos para cubrir
-      // casos donde el navegador interrumpe la operación
       docRef.delete().catch(() => {});
       setTimeout(() => docRef.delete().catch(() => {}), 300);
       setTimeout(() => docRef.delete().catch(() => {}), 800);
@@ -238,11 +237,9 @@
       }
     }
 
-    // Limpiar voluntarios inactivos hace más de 30 minutos
     function limpiarVoluntariosInactivos() {
       const limiteMs = MINUTOS_INACTIVO * 60 * 1000;
       const ahora = Date.now();
-
       db.collection('voluntarios').get({ source: 'server' }).then((snapshot) => {
         snapshot.forEach((doc) => {
           const data = doc.data();
@@ -485,22 +482,14 @@
       cargarTramos();
       iniciarGPS();
       escucharVoluntarios();
-
-      // Limpiar voluntarios inactivos al entrar
       limpiarVoluntariosInactivos();
-
-      // Limpiar cada 10 minutos mientras la app está abierta
       setInterval(limpiarVoluntariosInactivos, 10 * 60 * 1000);
     }
 
-    // Intentar borrar documento cuando el usuario cierra la pestaña
     window.addEventListener('beforeunload', () => {
-      if (userId && !esUsuarioAdmin) {
-        borrarDocumentoVoluntario();
-      }
+      if (userId && !esUsuarioAdmin) borrarDocumentoVoluntario();
     });
 
-    // Intentar borrar documento cuando la app va a segundo plano
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden' && userId && !esUsuarioAdmin) {
         borrarDocumentoVoluntario();
@@ -528,14 +517,25 @@
             if (doc.exists) {
               const data = doc.data();
               if (data.session_id && data.session_id !== SESSION_ID) {
-                auth.signOut().then(() => {
-                  document.getElementById('loginError').textContent =
-                    '⚠️ Este usuario ya está activo en otro dispositivo.';
-                  document.getElementById('loginError').style.display = 'block';
-                  document.getElementById('loginBtn').textContent = 'Iniciar sesión';
-                  document.getElementById('loginBtn').disabled = false;
-                });
-                return;
+                // Comprobar antigüedad del documento
+                const ahora = Date.now();
+                const ultimaActualizacion = data.timestamp ? data.timestamp.toMillis() : 0;
+                const segundos = (ahora - ultimaActualizacion) / 1000;
+
+                if (segundos < SEGUNDOS_SESION_ACTIVA) {
+                  // Sesión activa en otro dispositivo → bloquear
+                  auth.signOut().then(() => {
+                    document.getElementById('loginError').textContent =
+                      '⚠️ Este usuario ya está activo en otro dispositivo.';
+                    document.getElementById('loginError').style.display = 'block';
+                    document.getElementById('loginBtn').textContent = 'Iniciar sesión';
+                    document.getElementById('loginBtn').disabled = false;
+                  });
+                  return;
+                } else {
+                  // Sesión antigua (más de 60 segundos) → borrar y entrar
+                  doc.ref.delete().catch(() => {});
+                }
               }
             }
 

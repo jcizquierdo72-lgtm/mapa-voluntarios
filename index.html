@@ -165,6 +165,9 @@
     let totalTramos = 0;
     let tramosCompletados = 0;
     let sesionListener = null;
+    let voluntariosListener = null;
+    let tramosListener = null;
+    let limpiezaIntervalId = null;
 
     // Caché local de los tramos. Se mantiene sincronizada mediante onSnapshot
     // y permite calcular la proximidad sin consultar Firestore en cada movimiento GPS.
@@ -228,21 +231,42 @@
         });
     }
 
-    function borrarDocumentoVoluntario() {
+    async function borrarDocumentoVoluntario() {
       if (!userId || esUsuarioAdmin) return;
-      const docRef = db.collection('voluntarios').doc(userId);
-      docRef.delete().catch(() => {});
-      setTimeout(() => docRef.delete().catch(() => {}), 300);
-      setTimeout(() => docRef.delete().catch(() => {}), 800);
+      const idABorrar = userId;
+      try {
+        await db.collection('voluntarios').doc(idABorrar).delete();
+      } catch (err) {
+        console.log('No se pudo borrar el voluntario:', err);
+      }
     }
 
-    function cerrarSesion() {
-      if (userId && !esUsuarioAdmin) {
-        borrarDocumentoVoluntario();
-        setTimeout(() => auth.signOut(), 1000);
-      } else {
-        auth.signOut();
+    async function cerrarSesion() {
+      const btnLogout = document.getElementById('logoutBtn');
+      if (btnLogout) {
+        btnLogout.disabled = true;
+        btnLogout.textContent = 'Cerrando...';
       }
+
+      // Primero detenemos el GPS para impedir que una nueva posición vuelva a
+      // crear/actualizar el documento mientras estamos cerrando la sesión.
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+
+      // Borrado local inmediato del marcador propio. Los demás dispositivos
+      // recibirán el borrado mediante onSnapshot.
+      if (userId && iconosVoluntarios[userId]) {
+        mapa.removeLayer(iconosVoluntarios[userId]);
+        delete iconosVoluntarios[userId];
+      }
+
+      // Esperamos a que Firestore confirme el borrado antes de cerrar sesión.
+      // Así evitamos que el marcador quede visible para los demás usuarios.
+      await borrarDocumentoVoluntario();
+
+      await auth.signOut();
     }
 
     function limpiarVoluntariosInactivos() {
@@ -406,7 +430,8 @@
     }
 
     function escucharVoluntarios() {
-      db.collection('voluntarios').onSnapshot((snapshot) => {
+      if (voluntariosListener) voluntariosListener();
+      voluntariosListener = db.collection('voluntarios').onSnapshot((snapshot) => {
         const idsActuales = new Set();
 
         snapshot.docs.forEach((doc) => {
@@ -452,7 +477,8 @@
     }
 
     function cargarTramos() {
-      db.collection('tramos_calles').onSnapshot((snapshot) => {
+      if (tramosListener) tramosListener();
+      tramosListener = db.collection('tramos_calles').onSnapshot((snapshot) => {
         document.getElementById('cargando').style.display = 'none';
         totalTramos = snapshot.size;
 
@@ -526,16 +552,20 @@
       iniciarGPS();
       escucharVoluntarios();
       limpiarVoluntariosInactivos();
-      setInterval(limpiarVoluntariosInactivos, 10 * 60 * 1000);
+      if (limpiezaIntervalId) clearInterval(limpiezaIntervalId);
+      limpiezaIntervalId = setInterval(limpiarVoluntariosInactivos, 10 * 60 * 1000);
     }
 
     window.addEventListener('beforeunload', () => {
-      if (userId && !esUsuarioAdmin) borrarDocumentoVoluntario();
-    });
-
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden' && userId && !esUsuarioAdmin) {
-        borrarDocumentoVoluntario();
+      // Intento de limpieza cuando se cierra la pestaña o la página.
+      // No se utiliza como mecanismo principal de cierre de sesión porque el
+      // navegador puede interrumpir operaciones asíncronas al salir.
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (userId && !esUsuarioAdmin) {
+        db.collection('voluntarios').doc(userId).delete().catch(() => {});
       }
     });
 
@@ -599,6 +629,13 @@
         userEquipo = null;
         userColor = null;
         if (sesionListener) { sesionListener(); sesionListener = null; }
+        if (voluntariosListener) { voluntariosListener(); voluntariosListener = null; }
+        if (tramosListener) { tramosListener(); tramosListener = null; }
+        if (limpiezaIntervalId) { clearInterval(limpiezaIntervalId); limpiezaIntervalId = null; }
+        Object.keys(iconosVoluntarios).forEach((id) => {
+          if (mapa && iconosVoluntarios[id]) mapa.removeLayer(iconosVoluntarios[id]);
+          delete iconosVoluntarios[id];
+        });
         document.getElementById('loginScreen').style.display = 'flex';
         document.getElementById('mapScreen').style.display = 'none';
         document.getElementById('loginBtn').textContent = 'Iniciar sesión';

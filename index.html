@@ -166,6 +166,14 @@
     let tramosCompletados = 0;
     let sesionListener = null;
 
+    // Caché local de los tramos. Se mantiene sincronizada mediante onSnapshot
+    // y permite calcular la proximidad sin consultar Firestore en cada movimiento GPS.
+    const tramosEnMemoria = {};
+
+    // Tramos que este usuario ya ha procesado durante la sesión. Evita repetir
+    // transacciones mientras permanece cerca del mismo tramo.
+    const tramosProcesadosPorUsuario = new Set();
+
     function crearIcono(esPropio, color) {
       return L.divIcon({
         className: '',
@@ -305,17 +313,17 @@
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
-    function procesarTramo(docRef) {
+    function procesarTramo(docRef, idTramo) {
       return db.runTransaction((transaction) => {
         return transaction.get(docRef).then((tramDoc) => {
-          if (!tramDoc.exists) return;
+          if (!tramDoc.exists) return false;
           const data = tramDoc.data();
-          if (data.estado !== 'rojo') return;
+          if (data.estado !== 'rojo') return false;
 
           const voluntariosCerca = data.voluntarios_cerca || [];
           const equiposCerca = data.equipos_cerca || [];
 
-          if (voluntariosCerca.includes(userId)) return;
+          if (voluntariosCerca.includes(userId)) return false;
 
           const nuevaLista = [...voluntariosCerca, userId];
           const nuevosEquipos = [...equiposCerca, userEquipo];
@@ -335,13 +343,25 @@
               equipos_cerca: nuevosEquipos
             });
           }
+
+          return true;
         });
-      }).catch((err) => console.log('Error en transacción:', err));
+      }).then((procesado) => {
+        if (procesado && idTramo) {
+          tramosProcesadosPorUsuario.add(idTramo);
+        }
+        return procesado;
+      }).catch((err) => {
+        console.log('Error en transacción:', err);
+        return false;
+      });
     }
 
     function actualizarPosicion(lat, lng) {
       if (esUsuarioAdmin || !userColor || !userEquipo) return;
 
+      // La posición del voluntario sí se guarda en Firestore para que los demás
+      // usuarios puedan verlo en tiempo real.
       db.collection('voluntarios').doc(userId).set({
         lat: lat,
         lng: lng,
@@ -352,18 +372,27 @@
         timestamp: firebase.firestore.FieldValue.serverTimestamp()
       });
 
-      db.collection('tramos_calles')
-        .where('estado', '==', 'rojo')
-        .get({ source: 'server' })
-        .then((snapshot) => {
-          snapshot.forEach((doc) => {
-            const data = doc.data();
-            const latCentro = (data.lat_inicio + data.lat_fin) / 2;
-            const lngCentro = (data.lng_inicio + data.lng_fin) / 2;
-            const distancia = calcularDistancia(lat, lng, latCentro, lngCentro);
-            if (distancia < 12) procesarTramo(doc.ref);
-          });
-        });
+      // IMPORTANTE: ya no se consulta Firestore en cada movimiento del GPS.
+      // Los tramos están en memoria y se comprueba localmente cuáles están
+      // a menos de 12 metros del voluntario.
+      Object.entries(tramosEnMemoria).forEach(([idTramo, data]) => {
+        if (data.estado !== 'rojo') return;
+        if (tramosProcesadosPorUsuario.has(idTramo)) return;
+
+        const voluntariosCerca = data.voluntarios_cerca || [];
+        if (voluntariosCerca.includes(userId)) {
+          tramosProcesadosPorUsuario.add(idTramo);
+          return;
+        }
+
+        const latCentro = (data.lat_inicio + data.lat_fin) / 2;
+        const lngCentro = (data.lng_inicio + data.lng_fin) / 2;
+        const distancia = calcularDistancia(lat, lng, latCentro, lngCentro);
+
+        if (distancia < 12) {
+          procesarTramo(db.collection('tramos_calles').doc(idTramo), idTramo);
+        }
+      });
     }
 
     function iniciarGPS() {
@@ -426,21 +455,30 @@
       db.collection('tramos_calles').onSnapshot((snapshot) => {
         document.getElementById('cargando').style.display = 'none';
         totalTramos = snapshot.size;
-        tramosCompletados = 0;
 
         snapshot.docChanges().forEach((change) => {
           const doc = change.doc;
           const data = doc.data();
           const id = doc.id;
-          const estado = data.estado || 'rojo';
-
-          if (estado === 'completado') tramosCompletados++;
 
           if (change.type === 'removed') {
+            delete tramosEnMemoria[id];
+            tramosProcesadosPorUsuario.delete(id);
             if (lineas[id]) { mapa.removeLayer(lineas[id]); delete lineas[id]; }
             return;
           }
 
+          // Guardamos/actualizamos el tramo en memoria. El GPS utilizará esta
+          // copia local y no hará consultas a Firestore para buscar tramos.
+          tramosEnMemoria[id] = data;
+
+          // Si el administrador ha reseteado un tramo, permitimos que este
+          // usuario pueda volver a procesarlo en esta sesión.
+          if (data.estado === 'rojo' && !(data.voluntarios_cerca || []).includes(userId)) {
+            tramosProcesadosPorUsuario.delete(id);
+          }
+
+          const estado = data.estado || 'rojo';
           let color;
           if (estado === 'completado' && data.color_equipo) {
             color = data.color_equipo;
@@ -455,6 +493,11 @@
             { color: color, weight: 5, opacity: 0.85 }
           ).addTo(mapa);
         });
+
+        // El contador se calcula sobre todos los tramos que tenemos en memoria,
+        // no solo sobre los documentos que han cambiado en este snapshot.
+        tramosCompletados = Object.values(tramosEnMemoria)
+          .filter(data => data.estado === 'completado').length;
 
         const contador = document.getElementById('contador');
         contador.style.display = 'block';
@@ -561,7 +604,12 @@
         document.getElementById('loginBtn').textContent = 'Iniciar sesión';
         document.getElementById('loginBtn').disabled = false;
         document.getElementById('resetBtn').style.display = 'none';
-        if (watchId) navigator.geolocation.clearWatch(watchId);
+        if (watchId) {
+          navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+        }
+        Object.keys(tramosEnMemoria).forEach((id) => delete tramosEnMemoria[id]);
+        tramosProcesadosPorUsuario.clear();
         if (mapa) { mapa.remove(); mapa = null; }
       }
     });

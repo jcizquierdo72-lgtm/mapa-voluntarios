@@ -161,6 +161,9 @@
     const lineas = {};
     const iconosVoluntarios = {};
     const ultimaActualizacionVoluntarios = {};
+    // Usuarios cuyo marcador ha expirado localmente. Evita que un snapshot
+    // antiguo vuelva a dibujar un punto que ya hemos eliminado.
+    const usuariosExpirados = new Set();
     let userId = null;
     let userEmail = null;
     let userEquipo = null;
@@ -270,30 +273,49 @@
         btnLogout.textContent = 'Cerrando...';
       }
 
-      if (watchId !== null) {
-        navigator.geolocation.clearWatch(watchId);
-        watchId = null;
+      const idABorrar = userId;
+
+      // Detenemos el GPS inmediatamente para impedir que se vuelva a escribir
+      // la presencia mientras estamos cerrando la sesión.
+      detenerPresenciaLocal();
+
+      // Quitamos inmediatamente nuestro propio marcador.
+      if (idABorrar && iconosVoluntarios[idABorrar]) {
+        mapa.removeLayer(iconosVoluntarios[idABorrar]);
+        delete iconosVoluntarios[idABorrar];
+      }
+      if (idABorrar) {
+        delete ultimaActualizacionVoluntarios[idABorrar];
+        usuariosExpirados.add(idABorrar);
       }
 
-      // Quitamos inmediatamente el punto del propio dispositivo.
-      if (userId && iconosVoluntarios[userId]) {
-        mapa.removeLayer(iconosVoluntarios[userId]);
-        delete iconosVoluntarios[userId];
-        delete ultimaActualizacionVoluntarios[userId];
+      // Intentamos borrar la presencia, pero NO bloqueamos el cierre de sesión
+      // esperando indefinidamente a Firestore. El timeout es deliberado: si la
+      // conexión es lenta o falla, los demás dispositivos terminarán ocultando
+      // el punto mediante el control de presencia local.
+      if (idABorrar && !esUsuarioAdmin) {
+        const docRef = db.collection('voluntarios').doc(idABorrar);
+        try {
+          await Promise.race([
+            docRef.delete(),
+            new Promise(resolve => setTimeout(resolve, 3000))
+          ]);
+        } catch (err) {
+          console.log('No se pudo borrar la presencia al cerrar sesión:', err);
+        }
       }
 
-      const borrado = await borrarDocumentoVoluntario();
-
-      if (!borrado) {
-        alert('No se ha podido cerrar la sesión correctamente porque no se ha podido eliminar tu presencia del mapa. Comprueba tu conexión y vuelve a intentarlo.');
+      // Cerramos siempre la sesión. No dejamos el botón atascado en "Cerrando..."
+      // por una operación de Firestore que no responda.
+      try {
+        await auth.signOut();
+      } catch (err) {
+        console.log('Error cerrando sesión:', err);
         if (btnLogout) {
           btnLogout.disabled = false;
           btnLogout.textContent = 'Cerrar sesión';
         }
-        return;
       }
-
-      await auth.signOut();
     }
 
     function limpiarVoluntariosInactivos() {
@@ -483,6 +505,8 @@
         if (!ultima) return;
 
         if (ahora - ultima > SEGUNDOS_PRESENCIA * 1000) {
+          usuariosExpirados.add(id);
+
           if (iconosVoluntarios[id]) {
             mapa.removeLayer(iconosVoluntarios[id]);
             delete iconosVoluntarios[id];
@@ -500,43 +524,60 @@
         (snapshot) => {
           const idsActuales = new Set();
 
-          snapshot.docs.forEach((doc) => {
-            const id = doc.id;
-            const data = doc.data();
-            idsActuales.add(id);
+          snapshot.docChanges().forEach((change) => {
+            const id = change.doc.id;
 
-            // Preferimos timestamp_cliente porque es inmediato y no depende
-            // de que serverTimestamp() haya sido resuelto todavía.
-            const ultima = typeof data.timestamp_cliente === 'number'
-              ? data.timestamp_cliente
-              : (data.timestamp ? data.timestamp.toMillis() : Date.now());
-
-            ultimaActualizacionVoluntarios[id] = ultima;
-
-            if (data.timestamp) {
-              const minutos = (Date.now() - data.timestamp.toMillis()) / 60000;
-              if (minutos > MINUTOS_INACTIVO) {
-                if (iconosVoluntarios[id]) {
-                  mapa.removeLayer(iconosVoluntarios[id]);
-                  delete iconosVoluntarios[id];
-                }
-                delete ultimaActualizacionVoluntarios[id];
-                return;
+            if (change.type === 'removed') {
+              if (iconosVoluntarios[id]) {
+                mapa.removeLayer(iconosVoluntarios[id]);
+                delete iconosVoluntarios[id];
               }
-            }
-
-            if (typeof data.lat !== 'number' || typeof data.lng !== 'number' || !data.color) return;
-
-            const esPropio = id === userId;
-
-            // Si Firestore entrega temporalmente una versión en caché más vieja
-            // que la posición local que acabamos de mostrar, no retrocedemos
-            // nuestro propio marcador.
-            if (esPropio && typeof data.timestamp_cliente === 'number' &&
-                ultimaActualizacionVoluntarios[id] > data.timestamp_cliente) {
+              delete ultimaActualizacionVoluntarios[id];
+              usuariosExpirados.delete(id);
               return;
             }
 
+            const data = change.doc.data();
+            if (typeof data.lat !== 'number' || typeof data.lng !== 'number' || !data.color) return;
+
+            const timestampNuevo = typeof data.timestamp_cliente === 'number'
+              ? data.timestamp_cliente
+              : (data.timestamp ? data.timestamp.toMillis() : 0);
+
+            const timestampAnterior = ultimaActualizacionVoluntarios[id] || 0;
+
+            // Un snapshot puede llegar desde caché después de que el marcador
+            // haya expirado. Solo aceptamos la actualización si realmente es
+            // más nueva que la última posición conocida.
+            if (timestampNuevo && timestampAnterior && timestampNuevo < timestampAnterior) {
+              return;
+            }
+
+            // Si el marcador había expirado, solo lo reactivamos con una posición
+            // genuinamente nueva. Esto evita el efecto de "parpadeo" al cerrar
+            // una pestaña.
+            if (usuariosExpirados.has(id) && timestampNuevo <= timestampAnterior) {
+              return;
+            }
+
+            ultimaActualizacionVoluntarios[id] = timestampNuevo || Date.now();
+            usuariosExpirados.delete(id);
+
+            // Un documento muy antiguo no debe aparecer aunque Firestore lo
+            // conserve temporalmente.
+            const edadMs = timestampNuevo ? Date.now() - timestampNuevo : 0;
+            if (edadMs > SEGUNDOS_PRESENCIA * 1000 && id !== userId) {
+              usuariosExpirados.add(id);
+              if (iconosVoluntarios[id]) {
+                mapa.removeLayer(iconosVoluntarios[id]);
+                delete iconosVoluntarios[id];
+              }
+              delete ultimaActualizacionVoluntarios[id];
+              return;
+            }
+
+            idsActuales.add(id);
+            const esPropio = id === userId;
             const icono = crearIcono(esPropio, data.color);
 
             if (iconosVoluntarios[id]) {
@@ -546,17 +587,6 @@
               iconosVoluntarios[id] = L.marker([data.lat, data.lng], { icon: icono })
                 .bindTooltip(data.email || id, { permanent: false, direction: 'top' })
                 .addTo(mapa);
-            }
-          });
-
-          // Solo eliminamos marcadores cuyo documento realmente ha desaparecido
-          // del resultado del listener. NO borramos aquí los timestamps: los
-          // necesitamos para la comprobación local de los 45 segundos.
-          Object.keys(iconosVoluntarios).forEach((id) => {
-            if (!idsActuales.has(id)) {
-              mapa.removeLayer(iconosVoluntarios[id]);
-              delete iconosVoluntarios[id];
-              delete ultimaActualizacionVoluntarios[id];
             }
           });
         },
@@ -741,6 +771,7 @@
         if (limpiezaIntervalId) { clearInterval(limpiezaIntervalId); limpiezaIntervalId = null; }
         if (presenciaIntervalId) { clearInterval(presenciaIntervalId); presenciaIntervalId = null; }
         Object.keys(ultimaActualizacionVoluntarios).forEach((id) => delete ultimaActualizacionVoluntarios[id]);
+        usuariosExpirados.clear();
         Object.keys(iconosVoluntarios).forEach((id) => {
           if (mapa && iconosVoluntarios[id]) mapa.removeLayer(iconosVoluntarios[id]);
           delete iconosVoluntarios[id];

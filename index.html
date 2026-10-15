@@ -145,7 +145,7 @@
     // Si un dispositivo deja de enviar posiciones (por ejemplo, porque se
     // cierra la pestaña), ocultamos su marcador localmente tras este tiempo.
     // No requiere ninguna lectura adicional de Firestore.
-    const SEGUNDOS_PRESENCIA = 45;
+    const SEGUNDOS_PRESENCIA = 4 * 60;
 
     function obtenerEquipo(email) {
       const match = email.match(/voluntario(\d{2})[abc]@/);
@@ -309,6 +309,7 @@
         if (btnLogout) {
           btnLogout.disabled = false;
           btnLogout.textContent = 'Cerrar sesión';
+          btnLogout.style.pointerEvents = 'auto';
         }
       }
     }
@@ -708,6 +709,18 @@
       }
     });
 
+    // Algunos navegadores pueden restaurar la página desde la caché de
+    // navegación (bfcache) conservando visualmente el botón en "Cerrando...".
+    // Al volver a mostrar la página lo dejamos siempre disponible si hay sesión.
+    window.addEventListener('pageshow', () => {
+      const btnLogout = document.getElementById('logoutBtn');
+      if (btnLogout && auth.currentUser) {
+        btnLogout.disabled = false;
+        btnLogout.textContent = 'Cerrar sesión';
+        btnLogout.style.pointerEvents = 'auto';
+      }
+    });
+
     auth.onAuthStateChanged((user) => {
       if (user) {
         userId = user.uid;
@@ -721,6 +734,7 @@
         const btnLogoutInicial = document.getElementById('logoutBtn');
         btnLogoutInicial.disabled = false;
         btnLogoutInicial.textContent = 'Cerrar sesión';
+        btnLogoutInicial.style.pointerEvents = 'auto';
 
         if (esUsuarioAdmin) {
           document.getElementById('loginScreen').style.display = 'none';

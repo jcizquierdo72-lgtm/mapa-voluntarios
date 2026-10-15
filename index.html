@@ -268,18 +268,20 @@
 
     async function cerrarSesion() {
       const btnLogout = document.getElementById('logoutBtn');
+      const idABorrar = userId;
+
+      // El botón puede quedar con el texto anterior si el navegador restaura
+      // la página desde memoria (por ejemplo, al volver a una pestaña).
+      // Siempre partimos de un estado conocido.
       if (btnLogout) {
         btnLogout.disabled = true;
         btnLogout.textContent = 'Cerrando...';
       }
 
-      const idABorrar = userId;
-
-      // Detenemos el GPS inmediatamente para impedir que se vuelva a escribir
-      // la presencia mientras estamos cerrando la sesión.
+      // Detener GPS antes de cualquier operación de cierre.
       detenerPresenciaLocal();
 
-      // Quitamos inmediatamente nuestro propio marcador.
+      // Eliminar inmediatamente nuestro marcador local.
       if (idABorrar && iconosVoluntarios[idABorrar]) {
         mapa.removeLayer(iconosVoluntarios[idABorrar]);
         delete iconosVoluntarios[idABorrar];
@@ -289,28 +291,21 @@
         usuariosExpirados.add(idABorrar);
       }
 
-      // Intentamos borrar la presencia, pero NO bloqueamos el cierre de sesión
-      // esperando indefinidamente a Firestore. El timeout es deliberado: si la
-      // conexión es lenta o falla, los demás dispositivos terminarán ocultando
-      // el punto mediante el control de presencia local.
+      // Lanzamos el borrado de Firestore sin esperar a que termine.
+      // El cierre de Firebase Auth no debe quedar bloqueado por una red lenta.
       if (idABorrar && !esUsuarioAdmin) {
-        const docRef = db.collection('voluntarios').doc(idABorrar);
-        try {
-          await Promise.race([
-            docRef.delete(),
-            new Promise(resolve => setTimeout(resolve, 3000))
-          ]);
-        } catch (err) {
+        db.collection('voluntarios').doc(idABorrar).delete().catch((err) => {
           console.log('No se pudo borrar la presencia al cerrar sesión:', err);
-        }
+        });
       }
 
-      // Cerramos siempre la sesión. No dejamos el botón atascado en "Cerrando..."
-      // por una operación de Firestore que no responda.
       try {
         await auth.signOut();
       } catch (err) {
         console.log('Error cerrando sesión:', err);
+      } finally {
+        // El listener de Auth también restablecerá estos valores, pero lo
+        // hacemos aquí como protección adicional contra botones atascados.
         if (btnLogout) {
           btnLogout.disabled = false;
           btnLogout.textContent = 'Cerrar sesión';
@@ -511,7 +506,11 @@
             mapa.removeLayer(iconosVoluntarios[id]);
             delete iconosVoluntarios[id];
           }
-          delete ultimaActualizacionVoluntarios[id];
+          // MUY IMPORTANTE: conservamos la última marca de tiempo.
+          // Si la borramos, un snapshot antiguo de Firestore puede volver a
+          // dibujar el punto y producir el efecto de parpadeo.
+          // El timestamp se conserva hasta que llegue una posición realmente
+          // más nueva de ese usuario.
         }
       });
     }
@@ -557,14 +556,14 @@
             // genuinamente nueva. Esto evita el efecto de "parpadeo" al cerrar
             // una pestaña.
             if (usuariosExpirados.has(id) && timestampNuevo <= timestampAnterior) {
+              // Es la misma posición (o una más antigua) que ya provocó la
+              // expiración. No la volvemos a dibujar.
               return;
             }
 
-            ultimaActualizacionVoluntarios[id] = timestampNuevo || Date.now();
-            usuariosExpirados.delete(id);
-
             // Un documento muy antiguo no debe aparecer aunque Firestore lo
-            // conserve temporalmente.
+            // conserve temporalmente. Conservamos su timestamp para que una
+            // copia antigua posterior no pueda reanimar el marcador.
             const edadMs = timestampNuevo ? Date.now() - timestampNuevo : 0;
             if (edadMs > SEGUNDOS_PRESENCIA * 1000 && id !== userId) {
               usuariosExpirados.add(id);
@@ -572,10 +571,13 @@
                 mapa.removeLayer(iconosVoluntarios[id]);
                 delete iconosVoluntarios[id];
               }
-              delete ultimaActualizacionVoluntarios[id];
+              // Guardamos el timestamp antiguo deliberadamente.
+              ultimaActualizacionVoluntarios[id] = timestampNuevo;
               return;
             }
 
+            ultimaActualizacionVoluntarios[id] = timestampNuevo || Date.now();
+            usuariosExpirados.delete(id);
             idsActuales.add(id);
             const esPropio = id === userId;
             const icono = crearIcono(esPropio, data.color);
@@ -713,6 +715,12 @@
         esUsuarioAdmin = ADMIN_EMAILS.includes(user.email);
         userEquipo = obtenerEquipo(user.email);
         userColor = obtenerColorEquipo(user.email);
+
+        // Restablecer siempre el botón al entrar. Evita que un estado visual
+        // anterior de la pestaña ("Cerrando...") se conserve al iniciar sesión.
+        const btnLogoutInicial = document.getElementById('logoutBtn');
+        btnLogoutInicial.disabled = false;
+        btnLogoutInicial.textContent = 'Cerrar sesión';
 
         if (esUsuarioAdmin) {
           document.getElementById('loginScreen').style.display = 'none';

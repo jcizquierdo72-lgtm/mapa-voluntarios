@@ -302,11 +302,11 @@
       db.collection('voluntarios').get({ source: 'server' }).then((snapshot) => {
         snapshot.forEach((doc) => {
           const data = doc.data();
-          if (data.timestamp) {
-            const ultimaActualizacion = data.timestamp.toMillis();
-            if (ahora - ultimaActualizacion > limiteMs) {
-              doc.ref.delete().catch(() => {});
-            }
+          const ultimaActualizacion = typeof data.timestamp_cliente === 'number'
+            ? data.timestamp_cliente
+            : (data.timestamp ? data.timestamp.toMillis() : 0);
+          if (ultimaActualizacion && ahora - ultimaActualizacion > limiteMs) {
+            doc.ref.delete().catch(() => {});
           }
         });
       });
@@ -409,7 +409,23 @@
     }
 
     function actualizarPosicion(lat, lng) {
-      if (esUsuarioAdmin || !userColor || !userEquipo) return;
+      if (esUsuarioAdmin || !userColor || !userEquipo || !userId) return;
+
+      const ahora = Date.now();
+
+      // Actualizamos inmediatamente el punto propio en el mapa local.
+      // Así no dependemos de que el onSnapshot haya vuelto ya con nuestro
+      // propio documento.
+      ultimaActualizacionVoluntarios[userId] = ahora;
+      const iconoPropio = crearIcono(true, userColor);
+      if (iconosVoluntarios[userId]) {
+        iconosVoluntarios[userId].setLatLng([lat, lng]);
+        iconosVoluntarios[userId].setIcon(iconoPropio);
+      } else {
+        iconosVoluntarios[userId] = L.marker([lat, lng], { icon: iconoPropio })
+          .bindTooltip(userEmail || userId, { permanent: false, direction: 'top' })
+          .addTo(mapa);
+      }
 
       // La posición del voluntario sí se guarda en Firestore para que los demás
       // usuarios puedan verlo en tiempo real.
@@ -420,8 +436,9 @@
         equipo: userEquipo,
         color: userColor,
         session_id: SESSION_ID,
-        timestamp: firebase.firestore.FieldValue.serverTimestamp()
-      });
+        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        timestamp_cliente: ahora
+      }).catch((err) => console.log('Error guardando posición:', err));
 
       // IMPORTANTE: ya no se consulta Firestore en cada movimiento del GPS.
       // Los tramos están en memoria y se comprueba localmente cuáles están
@@ -477,56 +494,76 @@
 
     function escucharVoluntarios() {
       if (voluntariosListener) voluntariosListener();
-      voluntariosListener = db.collection('voluntarios').onSnapshot((snapshot) => {
-        const idsActuales = new Set();
 
-        snapshot.docs.forEach((doc) => {
-          const id = doc.id;
-          const data = doc.data();
-          idsActuales.add(id);
+      voluntariosListener = db.collection('voluntarios').onSnapshot(
+        { includeMetadataChanges: true },
+        (snapshot) => {
+          const idsActuales = new Set();
 
-          if (data.timestamp) {
-            ultimaActualizacionVoluntarios[id] = data.timestamp.toMillis();
-          }
+          snapshot.docs.forEach((doc) => {
+            const id = doc.id;
+            const data = doc.data();
+            idsActuales.add(id);
 
-          if (!data.lat || !data.lng || !data.color) return;
+            // Preferimos timestamp_cliente porque es inmediato y no depende
+            // de que serverTimestamp() haya sido resuelto todavía.
+            const ultima = typeof data.timestamp_cliente === 'number'
+              ? data.timestamp_cliente
+              : (data.timestamp ? data.timestamp.toMillis() : Date.now());
 
-          if (data.timestamp) {
-            const ahora = Date.now();
-            const ultimaActualizacion = data.timestamp.toMillis();
-            const minutos = (ahora - ultimaActualizacion) / 60000;
-            if (minutos > MINUTOS_INACTIVO) {
-              if (iconosVoluntarios[id]) {
-                mapa.removeLayer(iconosVoluntarios[id]);
-                delete iconosVoluntarios[id];
+            ultimaActualizacionVoluntarios[id] = ultima;
+
+            if (data.timestamp) {
+              const minutos = (Date.now() - data.timestamp.toMillis()) / 60000;
+              if (minutos > MINUTOS_INACTIVO) {
+                if (iconosVoluntarios[id]) {
+                  mapa.removeLayer(iconosVoluntarios[id]);
+                  delete iconosVoluntarios[id];
+                }
+                delete ultimaActualizacionVoluntarios[id];
+                return;
               }
-              delete ultimaActualizacionVoluntarios[id];
+            }
+
+            if (typeof data.lat !== 'number' || typeof data.lng !== 'number' || !data.color) return;
+
+            const esPropio = id === userId;
+
+            // Si Firestore entrega temporalmente una versión en caché más vieja
+            // que la posición local que acabamos de mostrar, no retrocedemos
+            // nuestro propio marcador.
+            if (esPropio && typeof data.timestamp_cliente === 'number' &&
+                ultimaActualizacionVoluntarios[id] > data.timestamp_cliente) {
               return;
             }
-          }
 
-          const esPropio = id === userId;
-          const icono = crearIcono(esPropio, data.color);
+            const icono = crearIcono(esPropio, data.color);
 
-          if (iconosVoluntarios[id]) {
-            iconosVoluntarios[id].setLatLng([data.lat, data.lng]);
-            iconosVoluntarios[id].setIcon(icono);
-          } else {
-            iconosVoluntarios[id] = L.marker([data.lat, data.lng], { icon: icono })
-              .bindTooltip(data.email || id, { permanent: false, direction: 'top' })
-              .addTo(mapa);
-          }
-        });
+            if (iconosVoluntarios[id]) {
+              iconosVoluntarios[id].setLatLng([data.lat, data.lng]);
+              iconosVoluntarios[id].setIcon(icono);
+            } else {
+              iconosVoluntarios[id] = L.marker([data.lat, data.lng], { icon: icono })
+                .bindTooltip(data.email || id, { permanent: false, direction: 'top' })
+                .addTo(mapa);
+            }
+          });
 
-        Object.keys(ultimaActualizacionVoluntarios).forEach((id) => delete ultimaActualizacionVoluntarios[id]);
-        Object.keys(iconosVoluntarios).forEach((id) => {
-          if (!idsActuales.has(id)) {
-            mapa.removeLayer(iconosVoluntarios[id]);
-            delete iconosVoluntarios[id];
-          }
-          delete ultimaActualizacionVoluntarios[id];
-        });
-      });
+          // Solo eliminamos marcadores cuyo documento realmente ha desaparecido
+          // del resultado del listener. NO borramos aquí los timestamps: los
+          // necesitamos para la comprobación local de los 45 segundos.
+          Object.keys(iconosVoluntarios).forEach((id) => {
+            if (!idsActuales.has(id)) {
+              mapa.removeLayer(iconosVoluntarios[id]);
+              delete iconosVoluntarios[id];
+              delete ultimaActualizacionVoluntarios[id];
+            }
+          });
+        },
+        (error) => {
+          console.log('Error en listener de voluntarios:', error);
+        }
+      );
     }
 
     function cargarTramos() {
@@ -616,14 +653,24 @@
       presenciaIntervalId = setInterval(limpiarMarcadoresInactivosLocalmente, 10 * 1000);
     }
 
-    window.addEventListener('beforeunload', () => {
-      // Intento de limpieza cuando se cierra la pestaña o la página.
-      // No se utiliza como mecanismo principal de cierre de sesión porque el
-      // navegador puede interrumpir operaciones asíncronas al salir.
+    function detenerPresenciaLocal() {
       if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
         watchId = null;
       }
+    }
+
+    window.addEventListener('beforeunload', () => {
+      // Intento adicional de limpieza. El mecanismo fiable para los demás
+      // dispositivos es el timestamp_cliente + timeout local de presencia.
+      detenerPresenciaLocal();
+      if (userId && !esUsuarioAdmin) {
+        db.collection('voluntarios').doc(userId).delete().catch(() => {});
+      }
+    });
+
+    window.addEventListener('pagehide', () => {
+      detenerPresenciaLocal();
       if (userId && !esUsuarioAdmin) {
         db.collection('voluntarios').doc(userId).delete().catch(() => {});
       }

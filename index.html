@@ -142,6 +142,10 @@
     const SESSION_ID = Math.random().toString(36).substr(2, 9);
     const MINUTOS_INACTIVO = 30;
     const SEGUNDOS_SESION_ACTIVA = 60;
+    // Si un dispositivo deja de enviar posiciones (por ejemplo, porque se
+    // cierra la pestaña), ocultamos su marcador localmente tras este tiempo.
+    // No requiere ninguna lectura adicional de Firestore.
+    const SEGUNDOS_PRESENCIA = 45;
 
     function obtenerEquipo(email) {
       const match = email.match(/voluntario(\d{2})[abc]@/);
@@ -156,6 +160,7 @@
     let mapa = null;
     const lineas = {};
     const iconosVoluntarios = {};
+    const ultimaActualizacionVoluntarios = {};
     let userId = null;
     let userEmail = null;
     let userEquipo = null;
@@ -168,6 +173,7 @@
     let voluntariosListener = null;
     let tramosListener = null;
     let limpiezaIntervalId = null;
+    let presenciaIntervalId = null;
 
     // Caché local de los tramos. Se mantiene sincronizada mediante onSnapshot
     // y permite calcular la proximidad sin consultar Firestore en cada movimiento GPS.
@@ -232,13 +238,29 @@
     }
 
     async function borrarDocumentoVoluntario() {
-      if (!userId || esUsuarioAdmin) return;
+      if (!userId || esUsuarioAdmin) return true;
+
       const idABorrar = userId;
-      try {
-        await db.collection('voluntarios').doc(idABorrar).delete();
-      } catch (err) {
-        console.log('No se pudo borrar el voluntario:', err);
+      const docRef = db.collection('voluntarios').doc(idABorrar);
+
+      // Intentamos borrar y comprobamos que realmente haya desaparecido.
+      // El borrado es una operación puntual (al cerrar sesión), por lo que
+      // esta comprobación no afecta al consumo normal de la aplicación.
+      for (let intento = 1; intento <= 3; intento++) {
+        try {
+          await docRef.delete();
+          const comprobacion = await docRef.get({ source: 'server' });
+          if (!comprobacion.exists) return true;
+        } catch (err) {
+          console.log(`Intento ${intento}: no se pudo borrar el voluntario`, err);
+        }
+
+        if (intento < 3) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
       }
+
+      return false;
     }
 
     async function cerrarSesion() {
@@ -248,23 +270,28 @@
         btnLogout.textContent = 'Cerrando...';
       }
 
-      // Primero detenemos el GPS para impedir que una nueva posición vuelva a
-      // crear/actualizar el documento mientras estamos cerrando la sesión.
       if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
         watchId = null;
       }
 
-      // Borrado local inmediato del marcador propio. Los demás dispositivos
-      // recibirán el borrado mediante onSnapshot.
+      // Quitamos inmediatamente el punto del propio dispositivo.
       if (userId && iconosVoluntarios[userId]) {
         mapa.removeLayer(iconosVoluntarios[userId]);
         delete iconosVoluntarios[userId];
+        delete ultimaActualizacionVoluntarios[userId];
       }
 
-      // Esperamos a que Firestore confirme el borrado antes de cerrar sesión.
-      // Así evitamos que el marcador quede visible para los demás usuarios.
-      await borrarDocumentoVoluntario();
+      const borrado = await borrarDocumentoVoluntario();
+
+      if (!borrado) {
+        alert('No se ha podido cerrar la sesión correctamente porque no se ha podido eliminar tu presencia del mapa. Comprueba tu conexión y vuelve a intentarlo.');
+        if (btnLogout) {
+          btnLogout.disabled = false;
+          btnLogout.textContent = 'Cerrar sesión';
+        }
+        return;
+      }
 
       await auth.signOut();
     }
@@ -429,6 +456,25 @@
       );
     }
 
+    function limpiarMarcadoresInactivosLocalmente() {
+      const ahora = Date.now();
+
+      Object.keys(ultimaActualizacionVoluntarios).forEach((id) => {
+        if (id === userId) return;
+
+        const ultima = ultimaActualizacionVoluntarios[id];
+        if (!ultima) return;
+
+        if (ahora - ultima > SEGUNDOS_PRESENCIA * 1000) {
+          if (iconosVoluntarios[id]) {
+            mapa.removeLayer(iconosVoluntarios[id]);
+            delete iconosVoluntarios[id];
+          }
+          delete ultimaActualizacionVoluntarios[id];
+        }
+      });
+    }
+
     function escucharVoluntarios() {
       if (voluntariosListener) voluntariosListener();
       voluntariosListener = db.collection('voluntarios').onSnapshot((snapshot) => {
@@ -438,6 +484,10 @@
           const id = doc.id;
           const data = doc.data();
           idsActuales.add(id);
+
+          if (data.timestamp) {
+            ultimaActualizacionVoluntarios[id] = data.timestamp.toMillis();
+          }
 
           if (!data.lat || !data.lng || !data.color) return;
 
@@ -450,6 +500,7 @@
                 mapa.removeLayer(iconosVoluntarios[id]);
                 delete iconosVoluntarios[id];
               }
+              delete ultimaActualizacionVoluntarios[id];
               return;
             }
           }
@@ -467,11 +518,13 @@
           }
         });
 
+        Object.keys(ultimaActualizacionVoluntarios).forEach((id) => delete ultimaActualizacionVoluntarios[id]);
         Object.keys(iconosVoluntarios).forEach((id) => {
           if (!idsActuales.has(id)) {
             mapa.removeLayer(iconosVoluntarios[id]);
             delete iconosVoluntarios[id];
           }
+          delete ultimaActualizacionVoluntarios[id];
         });
       });
     }
@@ -549,11 +602,18 @@
       }
 
       cargarTramos();
-      iniciarGPS();
+      // Primero conectamos el listener de voluntarios y después arrancamos el GPS.
+      // Así, el primer position() no puede adelantarse a la suscripción y el
+      // resto de usuarios reciben desde el principio la presencia del voluntario.
       escucharVoluntarios();
+      iniciarGPS();
+
       limpiarVoluntariosInactivos();
       if (limpiezaIntervalId) clearInterval(limpiezaIntervalId);
       limpiezaIntervalId = setInterval(limpiarVoluntariosInactivos, 10 * 60 * 1000);
+
+      if (presenciaIntervalId) clearInterval(presenciaIntervalId);
+      presenciaIntervalId = setInterval(limpiarMarcadoresInactivosLocalmente, 10 * 1000);
     }
 
     window.addEventListener('beforeunload', () => {
@@ -632,6 +692,8 @@
         if (voluntariosListener) { voluntariosListener(); voluntariosListener = null; }
         if (tramosListener) { tramosListener(); tramosListener = null; }
         if (limpiezaIntervalId) { clearInterval(limpiezaIntervalId); limpiezaIntervalId = null; }
+        if (presenciaIntervalId) { clearInterval(presenciaIntervalId); presenciaIntervalId = null; }
+        Object.keys(ultimaActualizacionVoluntarios).forEach((id) => delete ultimaActualizacionVoluntarios[id]);
         Object.keys(iconosVoluntarios).forEach((id) => {
           if (mapa && iconosVoluntarios[id]) mapa.removeLayer(iconosVoluntarios[id]);
           delete iconosVoluntarios[id];

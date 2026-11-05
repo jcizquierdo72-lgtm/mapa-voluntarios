@@ -65,6 +65,20 @@
       padding: 6px 12px; border-radius: 6px; cursor: pointer;
       font-size: 13px; margin-left: 8px;
     }
+    #finalizarBtn {
+      display: none; background: #8B4513; border: none; color: white;
+      padding: 6px 12px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; margin-left: 8px;
+    }
+    #reanudarBtn {
+      display: none; background: #287A3D; border: none; color: white;
+      padding: 6px 12px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; margin-left: 8px;
+    }
+    #finalizarBtn:disabled, #resetBtn:disabled, #reanudarBtn:disabled {
+      opacity: .65; cursor: not-allowed;
+    }
+    #finalizarBtn:disabled, #resetBtn:disabled { opacity: .65; cursor: not-allowed; }
     #cargando {
       position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
       background: white; padding: 10px 20px; border-radius: 20px;
@@ -101,6 +115,8 @@
       <div>
         <button id="logoutBtn">Cerrar sesión</button>
         <button id="resetBtn">🔄 Resetear mapa</button>
+        <button id="finalizarBtn">🏁 Finalizar caravana</button>
+        <button id="reanudarBtn">↻ Reanudar caravana</button>
       </div>
     </div>
     <div id="mapa" style="position:absolute; top:50px; left:0; right:0; bottom:0;"></div>
@@ -140,11 +156,12 @@
     };
 
     const SESSION_ID = Math.random().toString(36).substr(2, 9);
-    const MINUTOS_INACTIVO = 30;
     const SEGUNDOS_SESION_ACTIVA = 60;
-    // Si un dispositivo deja de enviar posiciones (por ejemplo, porque se
-    // cierra la pestaña), ocultamos su marcador localmente tras este tiempo.
-    // No requiere ninguna lectura adicional de Firestore.
+    // Movimiento: 30 s mínimos y 10 m mínimos. En reposo: presencia cada 60 s.
+    const INTERVALO_MIN_ESCRITURA_MS = 30 * 1000;
+    const INTERVALO_PRESENCIA_MS = 60 * 1000;
+    const DISTANCIA_MIN_ESCRITURA_METROS = 10;
+    // El marcador remoto caduca localmente tras 4 minutos sin actualizaciones.
     const SEGUNDOS_PRESENCIA = 4 * 60;
 
     function obtenerEquipo(email) {
@@ -170,13 +187,18 @@
     let userColor = null;
     let esUsuarioAdmin = false;
     let watchId = null;
+    let ultimaEscrituraPosicionMs = 0;
+    let ultimaPosicionEscrita = null;
+    let escrituraPosicionEnCurso = false;
+    let documentoVoluntarioInicializado = false;
+    let estadoCaravanaListener = null;
+    let caravanaFinalizada = false;
     let totalTramos = 0;
     let tramosCompletados = 0;
     let sesionListener = null;
     let voluntariosListener = null;
     let tramosListener = null;
-    let limpiezaIntervalId = null;
-    let presenciaIntervalId = null;
+let presenciaIntervalId = null;
 
     // Caché local de los tramos. Se mantiene sincronizada mediante onSnapshot
     // y permite calcular la proximidad sin consultar Firestore en cada movimiento GPS.
@@ -314,23 +336,11 @@
       }
     }
 
-    function limpiarVoluntariosInactivos() {
-      const limiteMs = MINUTOS_INACTIVO * 60 * 1000;
-      const ahora = Date.now();
-      db.collection('voluntarios').get({ source: 'server' }).then((snapshot) => {
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          const ultimaActualizacion = typeof data.timestamp_cliente === 'number'
-            ? data.timestamp_cliente
-            : (data.timestamp ? data.timestamp.toMillis() : 0);
-          if (ultimaActualizacion && ahora - ultimaActualizacion > limiteMs) {
-            doc.ref.delete().catch(() => {});
-          }
-        });
-      });
-    }
+    // Se elimina la limpieza global periódica. Los marcadores caducan
+    // localmente y el administrador borrará los documentos al finalizar.
 
     function resetearMapa() {
+      if (!esUsuarioAdmin || caravanaFinalizada) return;
       if (!confirm('¿Seguro que quieres resetear todos los tramos a rojo? Esta acción no se puede deshacer.')) return;
 
       const resetBtn = document.getElementById('resetBtn');
@@ -383,6 +393,7 @@
     }
 
     function procesarTramo(docRef, idTramo) {
+      if (caravanaFinalizada) return Promise.resolve(false);
       return db.runTransaction((transaction) => {
         return transaction.get(docRef).then((tramDoc) => {
           if (!tramDoc.exists) return false;
@@ -427,13 +438,10 @@
     }
 
     function actualizarPosicion(lat, lng) {
-      if (esUsuarioAdmin || !userColor || !userEquipo || !userId) return;
-
+      if (caravanaFinalizada || esUsuarioAdmin || !userColor || !userEquipo || !userId) return;
       const ahora = Date.now();
 
-      // Actualizamos inmediatamente el punto propio en el mapa local.
-      // Así no dependemos de que el onSnapshot haya vuelto ya con nuestro
-      // propio documento.
+      // El marcador propio se actualiza localmente con cada lectura GPS.
       ultimaActualizacionVoluntarios[userId] = ahora;
       const iconoPropio = crearIcono(true, userColor);
       if (iconosVoluntarios[userId]) {
@@ -445,44 +453,51 @@
           .addTo(mapa);
       }
 
-      // La posición del voluntario sí se guarda en Firestore para que los demás
-      // usuarios puedan verlo en tiempo real.
-      db.collection('voluntarios').doc(userId).set({
+      // Evitamos escrituras simultáneas.
+      if (escrituraPosicionEnCurso) return;
+      const transcurrido = ahora - ultimaEscrituraPosicionMs;
+      const distancia = ultimaPosicionEscrita
+        ? calcularDistancia(ultimaPosicionEscrita.lat, ultimaPosicionEscrita.lng, lat, lng)
+        : Infinity;
+      const primera = !documentoVoluntarioInicializado;
+      const presenciaVencida = documentoVoluntarioInicializado &&
+        transcurrido >= INTERVALO_PRESENCIA_MS;
+      const movimientoSuficiente = documentoVoluntarioInicializado &&
+        transcurrido >= INTERVALO_MIN_ESCRITURA_MS &&
+        distancia >= DISTANCIA_MIN_ESCRITURA_METROS;
+
+      if (!primera && !presenciaVencida && !movimientoSuficiente) return;
+
+      escrituraPosicionEnCurso = true;
+      const ref = db.collection('voluntarios').doc(userId);
+      const datos = {
         lat: lat,
         lng: lng,
-        email: userEmail,
-        equipo: userEquipo,
-        color: userColor,
-        session_id: SESSION_ID,
         timestamp: firebase.firestore.FieldValue.serverTimestamp(),
         timestamp_cliente: ahora
-      }).catch((err) => console.log('Error guardando posición:', err));
+      };
+      // La primera escritura incluye identificación; las siguientes solo posición.
+      const operacion = primera
+        ? ref.set({
+            ...datos, email: userEmail, equipo: userEquipo,
+            color: userColor, session_id: SESSION_ID
+          })
+        : ref.update(datos);
 
-      // IMPORTANTE: ya no se consulta Firestore en cada movimiento del GPS.
-      // Los tramos están en memoria y se comprueba localmente cuáles están
-      // a menos de 12 metros del voluntario.
-      Object.entries(tramosEnMemoria).forEach(([idTramo, data]) => {
-        if (data.estado !== 'rojo') return;
-        if (tramosProcesadosPorUsuario.has(idTramo)) return;
-
-        const voluntariosCerca = data.voluntarios_cerca || [];
-        if (voluntariosCerca.includes(userId)) {
-          tramosProcesadosPorUsuario.add(idTramo);
-          return;
-        }
-
-        const latCentro = (data.lat_inicio + data.lat_fin) / 2;
-        const lngCentro = (data.lng_inicio + data.lng_fin) / 2;
-        const distancia = calcularDistancia(lat, lng, latCentro, lngCentro);
-
-        if (distancia < 12) {
-          procesarTramo(db.collection('tramos_calles').doc(idTramo), idTramo);
-        }
+      operacion.then(() => {
+        ultimaEscrituraPosicionMs = Date.now();
+        ultimaPosicionEscrita = { lat: lat, lng: lng };
+        documentoVoluntarioInicializado = true;
+      }).catch((err) => {
+        if (!primera) documentoVoluntarioInicializado = false;
+        console.log('Error guardando posición:', err);
+      }).finally(() => {
+        escrituraPosicionEnCurso = false;
       });
     }
 
     function iniciarGPS() {
-      if (esUsuarioAdmin || !userColor || !userEquipo) return;
+      if (caravanaFinalizada || esUsuarioAdmin || !userColor || !userEquipo) return;
       if (!navigator.geolocation) return;
       watchId = navigator.geolocation.watchPosition(
         (pos) => actualizarPosicion(pos.coords.latitude, pos.coords.longitude),
@@ -520,7 +535,6 @@
       if (voluntariosListener) voluntariosListener();
 
       voluntariosListener = db.collection('voluntarios').onSnapshot(
-        { includeMetadataChanges: true },
         (snapshot) => {
           const idsActuales = new Set();
 
@@ -655,6 +669,175 @@
       });
     }
 
+    function quitarMarcadoresVoluntarios() {
+      Object.keys(iconosVoluntarios).forEach((id) => {
+        if (mapa && iconosVoluntarios[id]) mapa.removeLayer(iconosVoluntarios[id]);
+        delete iconosVoluntarios[id];
+      });
+      Object.keys(ultimaActualizacionVoluntarios).forEach((id) => delete ultimaActualizacionVoluntarios[id]);
+      usuariosExpirados.clear();
+    }
+
+    function aplicarFinalizacionCaravana() {
+      if (caravanaFinalizada) return;
+      caravanaFinalizada = true;
+      detenerPresenciaLocal();
+      if (voluntariosListener) { voluntariosListener(); voluntariosListener = null; }
+      if (presenciaIntervalId) { clearInterval(presenciaIntervalId); presenciaIntervalId = null; }
+      quitarMarcadoresVoluntarios();
+      document.getElementById('resetBtn').style.display = 'none';
+      const btn = document.getElementById('finalizarBtn');
+      if (btn) { btn.style.display = 'none'; btn.disabled = true; btn.textContent = '🏁 Caravana finalizada'; }
+      const reanudarBtn = document.getElementById('reanudarBtn');
+      if (reanudarBtn) { reanudarBtn.style.display = 'inline-block'; reanudarBtn.disabled = false; reanudarBtn.textContent = '↻ Reanudar caravana'; }
+    }
+
+    function escucharEstadoCaravana() {
+      if (estadoCaravanaListener) estadoCaravanaListener();
+      estadoCaravanaListener = db.collection('configuracion').doc('estadoCaravana')
+        .onSnapshot((doc) => {
+          const datos = doc.exists ? doc.data() : {};
+          if (datos.finalizada === true) {
+            aplicarFinalizacionCaravana();
+            return;
+          }
+          caravanaFinalizada = false;
+          const btnFinalizar = document.getElementById('finalizarBtn');
+          const btnReanudar = document.getElementById('reanudarBtn');
+          if (esUsuarioAdmin) {
+            if (btnFinalizar) { btnFinalizar.style.display = 'inline-block'; btnFinalizar.disabled = false; btnFinalizar.textContent = '🏁 Finalizar caravana'; }
+            if (btnReanudar) btnReanudar.style.display = 'none';
+            document.getElementById('resetBtn').style.display = 'inline-block';
+          }
+          if (!voluntariosListener) escucharVoluntarios();
+          if (watchId === null) iniciarGPS();
+        }, (error) => {
+          // Ante un error no arrancamos el GPS si no podemos verificar el estado.
+          console.log('Error comprobando el estado de la caravana:', error);
+        });
+    }
+
+    async function finalizarCaravana() {
+      if (!esUsuarioAdmin) return;
+      const btn = document.getElementById('finalizarBtn');
+
+      if (!caravanaFinalizada) {
+        const ok = confirm(
+          '¿Finalizar definitivamente la caravana? Se eliminarán los documentos ' +
+          'de presencia y se detendrá el GPS. Las calles y sus colores se conservarán.'
+        );
+        if (!ok) return;
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Finalizando...'; }
+
+        try {
+          // Se registra primero el cierre para que los demás dispositivos se detengan.
+          await db.collection('configuracion').doc('estadoCaravana').set({
+            finalizada: true,
+            fechaFinalizacion: firebase.firestore.FieldValue.serverTimestamp(),
+            finalizadaPor: userEmail || 'administrador'
+          });
+          aplicarFinalizacionCaravana();
+        } catch (error) {
+          console.log('Error registrando la finalización:', error);
+          alert('No se pudo finalizar la caravana. Comprueba la conexión y los permisos de Firebase.');
+          if (btn) { btn.disabled = false; btn.textContent = '🏁 Finalizar caravana'; }
+          return;
+        }
+      }
+
+      // Si falla el borrado, se puede pulsar de nuevo para reintentar.
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Eliminando voluntarios...'; }
+      try {
+        const snap = await db.collection('voluntarios').get({ source: 'server' });
+        let batch = db.batch();
+        let n = 0;
+        const commits = [];
+        snap.forEach((doc) => {
+          batch.delete(doc.ref);
+          n++;
+          if (n === 450) { commits.push(batch.commit()); batch = db.batch(); n = 0; }
+        });
+        if (n > 0) commits.push(batch.commit());
+        await Promise.all(commits);
+        if (btn) { btn.disabled = true; btn.textContent = '🏁 Caravana finalizada'; }
+        alert('Caravana finalizada. Las calles se han conservado y se han eliminado los documentos de voluntarios.');
+      } catch (error) {
+        console.log('Error eliminando voluntarios:', error);
+        alert('La caravana está finalizada, pero no se pudieron borrar todos los documentos. Pulsa «Reintentar limpieza» para intentarlo de nuevo.');
+        if (btn) { btn.disabled = false; btn.textContent = '🔁 Reintentar limpieza'; }
+      }
+    }
+
+    async function reanudarCaravana() {
+      if (!esUsuarioAdmin || !caravanaFinalizada) return;
+      const btn = document.getElementById('reanudarBtn');
+      const confirmar = confirm(
+        '¿Reanudar la caravana para una nueva edición desde cero? Se pondrán ' +
+        'todas las calles en rojo y se eliminarán los documentos de voluntarios. ' +
+        'El mapa actual dejará de conservar los resultados de la edición anterior.'
+      );
+      if (!confirmar) return;
+
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Preparando nueva caravana...'; }
+      try {
+        // 1) Reiniciar todos los tramos y borrar el estado de la edición anterior.
+        const tramosSnap = await db.collection('tramos_calles').get({ source: 'server' });
+        let batchTramos = db.batch();
+        let cuentaTramos = 0;
+        const commitsTramos = [];
+        tramosSnap.forEach((doc) => {
+          batchTramos.update(doc.ref, {
+            estado: 'rojo',
+            voluntarios_cerca: [],
+            equipos_cerca: [],
+            visitado_por: [],
+            color_equipo: ''
+          });
+          cuentaTramos++;
+          if (cuentaTramos === 450) {
+            commitsTramos.push(batchTramos.commit());
+            batchTramos = db.batch();
+            cuentaTramos = 0;
+          }
+        });
+        if (cuentaTramos > 0) commitsTramos.push(batchTramos.commit());
+        await Promise.all(commitsTramos);
+
+        // 2) Eliminar cualquier presencia antigua que haya quedado almacenada.
+        const voluntariosSnap = await db.collection('voluntarios').get({ source: 'server' });
+        let batchVoluntarios = db.batch();
+        let cuentaVoluntarios = 0;
+        const commitsVoluntarios = [];
+        voluntariosSnap.forEach((doc) => {
+          batchVoluntarios.delete(doc.ref);
+          cuentaVoluntarios++;
+          if (cuentaVoluntarios === 450) {
+            commitsVoluntarios.push(batchVoluntarios.commit());
+            batchVoluntarios = db.batch();
+            cuentaVoluntarios = 0;
+          }
+        });
+        if (cuentaVoluntarios > 0) commitsVoluntarios.push(batchVoluntarios.commit());
+        await Promise.all(commitsVoluntarios);
+
+        // 3) Reactivar la caravana solo cuando mapa y presencia estén limpios.
+        await db.collection('configuracion').doc('estadoCaravana').set({
+          finalizada: false,
+          fechaReanudacion: firebase.firestore.FieldValue.serverTimestamp(),
+          reanudadaPor: userEmail || 'administrador'
+        }, { merge: true });
+
+        // El listener de estado volverá a activar las funciones necesarias.
+        caravanaFinalizada = false;
+        quitarMarcadoresVoluntarios();
+        alert('Nueva caravana preparada. Todas las calles están en rojo y ya se puede iniciar una nueva jornada.');
+      } catch (error) {
+        console.log('Error preparando una nueva caravana:', error);
+        alert('No se ha podido preparar la nueva caravana por completo. La actividad seguirá marcada como finalizada. Comprueba la conexión y los permisos antes de volver a intentarlo.');
+        if (btn) { btn.disabled = false; btn.textContent = '↻ Reintentar reanudación'; }
+      }
+    }
+
     function iniciarMapa() {
       if (mapa) return;
       mapa = L.map('mapa');
@@ -672,18 +855,12 @@
       }
 
       cargarTramos();
-      // Primero conectamos el listener de voluntarios y después arrancamos el GPS.
-      // Así, el primer position() no puede adelantarse a la suscripción y el
-      // resto de usuarios reciben desde el principio la presencia del voluntario.
-      escucharVoluntarios();
-      iniciarGPS();
-
-      limpiarVoluntariosInactivos();
-      if (limpiezaIntervalId) clearInterval(limpiezaIntervalId);
-      limpiezaIntervalId = setInterval(limpiarVoluntariosInactivos, 10 * 60 * 1000);
-
+      // Comprobamos primero el estado de la caravana antes de activar presencia/GPS.
+      escucharEstadoCaravana();
       if (presenciaIntervalId) clearInterval(presenciaIntervalId);
-      presenciaIntervalId = setInterval(limpiarMarcadoresInactivosLocalmente, 10 * 1000);
+      presenciaIntervalId = setInterval(() => {
+        if (!caravanaFinalizada) limpiarMarcadoresInactivosLocalmente();
+      }, 10 * 1000);
     }
 
     function detenerPresenciaLocal() {
@@ -697,14 +874,14 @@
       // Intento adicional de limpieza. El mecanismo fiable para los demás
       // dispositivos es el timestamp_cliente + timeout local de presencia.
       detenerPresenciaLocal();
-      if (userId && !esUsuarioAdmin) {
+      if (userId && !esUsuarioAdmin && !caravanaFinalizada) {
         db.collection('voluntarios').doc(userId).delete().catch(() => {});
       }
     });
 
     window.addEventListener('pagehide', () => {
       detenerPresenciaLocal();
-      if (userId && !esUsuarioAdmin) {
+      if (userId && !esUsuarioAdmin && !caravanaFinalizada) {
         db.collection('voluntarios').doc(userId).delete().catch(() => {});
       }
     });
@@ -725,6 +902,11 @@
       if (user) {
         userId = user.uid;
         userEmail = user.email;
+        ultimaEscrituraPosicionMs = 0;
+        ultimaPosicionEscrita = null;
+        escrituraPosicionEnCurso = false;
+        documentoVoluntarioInicializado = false;
+        caravanaFinalizada = false;
         esUsuarioAdmin = ADMIN_EMAILS.includes(user.email);
         userEquipo = obtenerEquipo(user.email);
         userColor = obtenerColorEquipo(user.email);
@@ -741,6 +923,8 @@
           document.getElementById('mapScreen').style.display = 'block';
           iniciarMapa();
           document.getElementById('resetBtn').style.display = 'inline-block';
+          document.getElementById('finalizarBtn').style.display = 'inline-block';
+          document.getElementById('reanudarBtn').style.display = 'none';
           return;
         }
 
@@ -773,11 +957,15 @@
 
             document.getElementById('loginScreen').style.display = 'none';
             document.getElementById('mapScreen').style.display = 'block';
+            document.getElementById('resetBtn').style.display = 'none';
+            document.getElementById('finalizarBtn').style.display = 'none';
             iniciarMapa();
           })
           .catch(() => {
             document.getElementById('loginScreen').style.display = 'none';
             document.getElementById('mapScreen').style.display = 'block';
+            document.getElementById('resetBtn').style.display = 'none';
+            document.getElementById('finalizarBtn').style.display = 'none';
             iniciarMapa();
           });
 
@@ -787,10 +975,15 @@
         esUsuarioAdmin = false;
         userEquipo = null;
         userColor = null;
+        ultimaEscrituraPosicionMs = 0;
+        ultimaPosicionEscrita = null;
+        escrituraPosicionEnCurso = false;
+        documentoVoluntarioInicializado = false;
+        caravanaFinalizada = false;
         if (sesionListener) { sesionListener(); sesionListener = null; }
         if (voluntariosListener) { voluntariosListener(); voluntariosListener = null; }
         if (tramosListener) { tramosListener(); tramosListener = null; }
-        if (limpiezaIntervalId) { clearInterval(limpiezaIntervalId); limpiezaIntervalId = null; }
+        if (estadoCaravanaListener) { estadoCaravanaListener(); estadoCaravanaListener = null; }
         if (presenciaIntervalId) { clearInterval(presenciaIntervalId); presenciaIntervalId = null; }
         Object.keys(ultimaActualizacionVoluntarios).forEach((id) => delete ultimaActualizacionVoluntarios[id]);
         usuariosExpirados.clear();
@@ -818,6 +1011,8 @@
       document.getElementById('forgotBtn').addEventListener('click', recuperarPassword);
       document.getElementById('logoutBtn').addEventListener('click', cerrarSesion);
       document.getElementById('resetBtn').addEventListener('click', resetearMapa);
+      document.getElementById('finalizarBtn').addEventListener('click', finalizarCaravana);
+      document.getElementById('reanudarBtn').addEventListener('click', reanudarCaravana);
       document.getElementById('togglePassword').addEventListener('click', () => {
         const input = document.getElementById('passwordInput');
         input.type = input.type === 'password' ? 'text' : 'password';

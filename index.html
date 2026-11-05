@@ -207,6 +207,8 @@ let presenciaIntervalId = null;
     // Tramos que este usuario ya ha procesado durante la sesión. Evita repetir
     // transacciones mientras permanece cerca del mismo tramo.
     const tramosProcesadosPorUsuario = new Set();
+    // Evita lanzar varias transacciones simultáneas para el mismo tramo.
+    const tramosEnProcesoPorUsuario = new Set();
 
     function crearIcono(esPropio, color) {
       return L.divIcon({
@@ -452,6 +454,32 @@ let presenciaIntervalId = null;
           .bindTooltip(userEmail || userId, { permanent: false, direction: 'top' })
           .addTo(mapa);
       }
+
+      // Comprobamos localmente si el voluntario está cerca de algún tramo.
+      // Los tramos ya están cargados en memoria, por lo que esta comprobación
+      // NO genera lecturas adicionales de Firestore.
+      Object.entries(tramosEnMemoria).forEach(([idTramo, data]) => {
+        if (data.estado !== 'rojo') return;
+        if (tramosProcesadosPorUsuario.has(idTramo)) return;
+        if (tramosEnProcesoPorUsuario.has(idTramo)) return;
+
+        const voluntariosCerca = data.voluntarios_cerca || [];
+        if (voluntariosCerca.includes(userId)) {
+          tramosProcesadosPorUsuario.add(idTramo);
+          return;
+        }
+
+        // Calculamos la distancia al punto central del tramo.
+        const latCentro = (data.lat_inicio + data.lat_fin) / 2;
+        const lngCentro = (data.lng_inicio + data.lng_fin) / 2;
+        const distancia = calcularDistancia(lat, lng, latCentro, lngCentro);
+
+        if (distancia < 12) {
+          tramosEnProcesoPorUsuario.add(idTramo);
+          procesarTramo(db.collection('tramos_calles').doc(idTramo), idTramo)
+            .finally(() => tramosEnProcesoPorUsuario.delete(idTramo));
+        }
+      });
 
       // Evitamos escrituras simultáneas.
       if (escrituraPosicionEnCurso) return;
@@ -1002,6 +1030,7 @@ let presenciaIntervalId = null;
         }
         Object.keys(tramosEnMemoria).forEach((id) => delete tramosEnMemoria[id]);
         tramosProcesadosPorUsuario.clear();
+        tramosEnProcesoPorUsuario.clear();
         if (mapa) { mapa.remove(); mapa = null; }
       }
     });
